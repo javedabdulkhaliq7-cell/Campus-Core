@@ -15,7 +15,7 @@ const STATUS_CONFIG: Record<AttendanceStatus, { label: string; btn: string }> = 
 };
 
 export default function Attendance() {
-  const { schoolId } = useSchool();
+  const { schoolId, loading: schoolLoading } = useSchool();
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [selectedGrade, setSelectedGrade] = useState('1');
   const [selectedSection, setSelectedSection] = useState('A');

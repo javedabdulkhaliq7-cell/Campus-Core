@@ -4,7 +4,7 @@ import { useSchool } from '../lib/schoolContext';
 import { Plus, Search, Eye, UserX, UserCheck, X, Save, ChevronDown } from 'lucide-react';
 
 export default function Students() {
-  const { schoolId } = useSchool();
+  const { schoolId, loading: schoolLoading } = useSchool();
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -29,7 +29,7 @@ export default function Students() {
     setLoading(false);
   }
 
-  useEffect(() => { if (schoolId) fetchData(); }, [schoolId]);
+  useEffect(() => { if (schoolId) fetchData(); else if (!schoolLoading) setLoading(false); }, [schoolId, schoolLoading]);
 
   const filtered = students.filter(s => {
     const matchSearch = !search || s.full_name.toLowerCase().includes(search.toLowerCase()) ||

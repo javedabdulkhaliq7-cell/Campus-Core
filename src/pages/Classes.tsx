@@ -4,7 +4,7 @@ import { useSchool } from '../lib/schoolContext';
 import { Plus, Save, X, ChevronDown, GraduationCap, DollarSign } from 'lucide-react';
 
 export default function Classes() {
-  const { schoolId } = useSchool();
+  const { schoolId, loading: schoolLoading } = useSchool();
   const [classes, setClasses] = useState<Class[]>([]);
   const [feeStructures, setFeeStructures] = useState<FeeStructure[]>([]);
   const [selectedYear, setSelectedYear] = useState(CURRENT_YEAR);
