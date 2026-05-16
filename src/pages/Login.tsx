@@ -9,48 +9,24 @@ interface LoginProps {
 export default function Login({ onLoginSuccess }: LoginProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [isSignUp, setIsSignUp] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
 
-  async function handleAuth() {
+  async function handleLogin() {
     if (!email || !password) {
       setError('Please enter email and password');
       return;
     }
-
     setLoading(true);
     setError('');
-    setSuccess('');
-
     try {
-      if (isSignUp) {
-        const { error: signUpError } = await supabase.auth.signUp({
-          email,
-          password,
-        });
-        if (signUpError) {
-          setError(signUpError.message);
-        } else {
-          setSuccess('Account created! Please sign in.');
-          setIsSignUp(false);
-          setPassword('');
-        }
-      } else {
-        const { data, error: signInError } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-
-        if (signInError) {
-          setError(signInError.message);
-        } else if (data.session) {
-          setSuccess('Login successful!');
-          setTimeout(onLoginSuccess, 500);
-        }
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      if (signInError) {
+        setError(signInError.message);
+      } else if (data.session) {
+        onLoginSuccess();
       }
-    } catch (err) {
+    } catch {
       setError('An error occurred. Please try again.');
     } finally {
       setLoading(false);
@@ -70,25 +46,14 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
         <div className="bg-white rounded-2xl shadow-2xl p-8 space-y-6">
           <div>
-            <h2 className="text-2xl font-bold text-slate-800">{isSignUp ? 'Create Account' : 'Sign In'}</h2>
-            <p className="text-slate-500 text-sm mt-1">
-              {isSignUp
-                ? 'Register your school account'
-                : 'Access your school dashboard'}
-            </p>
+            <h2 className="text-2xl font-bold text-slate-800">Sign In</h2>
+            <p className="text-slate-500 text-sm mt-1">Access your school dashboard</p>
           </div>
 
           {error && (
             <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
               <span className="text-sm text-red-700">{error}</span>
-            </div>
-          )}
-
-          {success && (
-            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
-              <span className="text-sm text-emerald-700">{success}</span>
             </div>
           )}
 
@@ -104,7 +69,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
                 disabled={loading}
               />
             </div>
-
             <div>
               <label className="label">Password</label>
               <input
@@ -114,39 +78,19 @@ export default function Login({ onLoginSuccess }: LoginProps) {
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 disabled={loading}
-                onKeyPress={e => e.key === 'Enter' && handleAuth()}
+                onKeyPress={e => e.key === 'Enter' && handleLogin()}
               />
             </div>
           </div>
 
           <button
-            onClick={handleAuth}
+            onClick={handleLogin}
             disabled={loading}
             className="w-full btn-primary justify-center py-2.5 disabled:opacity-50"
           >
             {loading ? (
-              <>
-                <Loader className="w-4 h-4 animate-spin" />
-                {isSignUp ? 'Creating Account...' : 'Signing In...'}
-              </>
-            ) : isSignUp ? (
-              'Create Account'
-            ) : (
-              'Sign In'
-            )}
-          </button>
-
-          <div className="relative py-2">
-            <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200" /></div>
-            <div className="relative flex justify-center text-xs"><span className="px-2 bg-white text-slate-500">or</span></div>
-          </div>
-
-          <button
-            onClick={() => { setIsSignUp(!isSignUp); setError(''); setSuccess(''); }}
-            disabled={loading}
-            className="w-full btn-secondary justify-center"
-          >
-            {isSignUp ? 'Already have an account? Sign In' : 'Need an account? Sign Up'}
+              <><Loader className="w-4 h-4 animate-spin" /> Signing In...</>
+            ) : 'Sign In'}
           </button>
 
           <p className="text-xs text-slate-400 text-center">

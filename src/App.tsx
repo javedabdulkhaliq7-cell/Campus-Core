@@ -11,7 +11,11 @@ import Classes from './pages/Classes';
 import Announcements from './pages/Announcements';
 import Settings from './pages/Settings';
 import Login from './pages/Login';
+import AdminLogin from './pages/AdminLogin';
+import AdminPanel from './pages/AdminPanel';
 import { Menu, X, School, LogOut } from 'lucide-react';
+
+const isAdminRoute = window.location.pathname === '/admin';
 
 type Page = 'dashboard' | 'students' | 'fees' | 'attendance' | 'reports' | 'classes' | 'announcements' | 'settings';
 
@@ -131,7 +135,15 @@ function AppContent() {
   );
 }
 
+
+function AdminApp() {
+  const [adminAuthed, setAdminAuthed] = useState(sessionStorage.getItem('admin_auth') === 'true');
+  if (!adminAuthed) return <AdminLogin onSuccess={() => setAdminAuthed(true)} />;
+  return <AdminPanel onLogout={() => { sessionStorage.removeItem('admin_auth'); setAdminAuthed(false); }} />;
+}
+
 export default function App() {
+  if (isAdminRoute) return <AdminApp />;
   return (
     <SchoolProvider>
       <AppContent />
