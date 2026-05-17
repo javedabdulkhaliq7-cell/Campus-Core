@@ -58,14 +58,20 @@ export default function AdminPanel({ onLogout }: Props) {
       // 1. Create auth user via Supabase Admin API
       // Call Edge Function to create user securely
       const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/create-user`, {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/Create-user`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session?.access_token}`,
           'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
         },
-        body: JSON.stringify({ email: form.email, password: form.password }),
+        body: JSON.stringify({ 
+  email: form.email, 
+  password: form.password,
+  schoolName: form.school_name,
+  principalName: form.principal_name,
+  city: form.city
+}),
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || 'Failed to create user');
