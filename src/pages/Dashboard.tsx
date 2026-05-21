@@ -49,8 +49,8 @@ export default function Dashboard() {
       const classes = classesRes.data || [];
 
       const activeStudents = students.filter(s => s.is_active).length;
-      const present = attendance.filter(a => a.status === 'Present').length;
-      const absent = attendance.filter(a => a.status === 'Absent').length;
+      const present = attendance.filter(a => a.status?.toLowerCase() === 'present').length;
+      const absent = attendance.filter(a => a.status?.toLowerCase() === 'absent').length;
       const totalMarked = attendance.length;
 
       const collected = fees.filter(f => f.status === 'Paid').reduce((s, f) => s + f.total_amount, 0);

@@ -10,6 +10,7 @@ import Reports from './pages/Reports';
 import Classes from './pages/Classes';
 import Announcements from './pages/Announcements';
 import Settings from './pages/Settings';
+import Results from './pages/Results';
 import Login from './pages/Login';
 import AdminLogin from './pages/AdminLogin';
 import AdminPanel from './pages/AdminPanel';
@@ -17,7 +18,7 @@ import { Menu, X, School, LogOut } from 'lucide-react';
 
 const isAdminRoute = window.location.pathname === '/admin';
 
-type Page = 'dashboard' | 'students' | 'fees' | 'attendance' | 'reports' | 'classes' | 'announcements' | 'settings';
+type Page = 'dashboard' | 'students' | 'fees' | 'attendance' | 'reports' | 'classes' | 'announcements' | 'settings' | 'results';
 
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: 'Principal Dashboard',
@@ -28,6 +29,7 @@ const PAGE_TITLES: Record<Page, string> = {
   classes: 'Classes & Fees',
   announcements: 'Notices',
   settings: 'Settings',
+  results: 'Exam Results',
 };
 
 function AppContent() {
@@ -83,6 +85,7 @@ function AppContent() {
     classes: <Classes />,
     announcements: <Announcements />,
     settings: <Settings />,
+    results: <Results />,
   };
 
   return (
@@ -91,42 +94,29 @@ function AppContent() {
 
       <div className="flex-1 lg:ml-64 min-w-0">
         <header className="sticky top-0 z-10 bg-white border-b border-slate-100 px-4 lg:px-6 py-3.5 flex items-center gap-4">
-          <button
-            className="lg:hidden p-1.5 hover:bg-slate-100 rounded-lg"
-            onClick={() => setSidebarOpen(o => !o)}
-          >
+          <button className="lg:hidden p-1.5 hover:bg-slate-100 rounded-lg" onClick={() => setSidebarOpen(o => !o)}>
             {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
-
           <div className="lg:hidden flex items-center gap-2">
             <div className="w-7 h-7 bg-blue-600 rounded-lg flex items-center justify-center">
               <School className="w-3.5 h-3.5 text-white" />
             </div>
             <span className="font-bold text-slate-800 text-sm">{schoolName}</span>
           </div>
-
           <h1 className="hidden lg:block font-semibold text-slate-700 text-sm">{PAGE_TITLES[currentPage]}</h1>
-
           <div className="ml-auto flex items-center gap-3">
             <div className="hidden sm:flex flex-col items-end">
               <span className="text-xs font-semibold text-slate-700">Principal</span>
-              <span className="text-xs text-slate-400">
-                {user?.email?.split('@')[0] || 'Admin'}
-              </span>
+              <span className="text-xs text-slate-400">{user?.email?.split('@')[0] || 'Admin'}</span>
             </div>
             <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
               {user?.email?.charAt(0).toUpperCase() || 'PR'}
             </div>
-            <button
-              onClick={handleLogout}
-              className="p-1.5 hover:bg-slate-100 rounded-lg transition-colors text-slate-500 hover:text-red-600"
-              title="Logout"
-            >
+            <button onClick={handleLogout} className="p-1.5 hover:bg-slate-100 rounded-lg transition-colors text-slate-500 hover:text-red-600" title="Logout">
               <LogOut className="w-4 h-4" />
             </button>
           </div>
         </header>
-
         <main className="p-4 lg:p-6">
           {pages[currentPage]}
         </main>
@@ -134,7 +124,6 @@ function AppContent() {
     </div>
   );
 }
-
 
 function AdminApp() {
   const [adminAuthed, setAdminAuthed] = useState(sessionStorage.getItem('admin_auth') === 'true');

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { createClient } from '@supabase/supabase-js';
-import { Shield, Plus, School, Users, Ban, CheckCircle, LogOut, Eye, EyeOff, X, Loader } from 'lucide-react';
+import { Shield, Plus, School, Users, Ban, CheckCircle, LogOut, Eye, EyeOff, X, Loader, Trash2, AlertTriangle } from 'lucide-react';
 
 interface SchoolRecord {
   id: string;
@@ -28,35 +28,91 @@ export default function AdminPanel({ onLogout }: Props) {
   const [saving, setSaving] = useState(false);
   const [showPass, setShowPass] = useState(false);
   const [form, setForm] = useState({
-    school_name: '',
-    principal_name: '',
-    city: '',
-    email: '',
-    password: '',
+    school_name: '', principal_name: '', city: '', email: '', password: '',
   });
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // ── Delete confirmation state ─────────────────────────────
+  const [deleteTarget, setDeleteTarget] = useState<SchoolRecord | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteConfirmName, setDeleteConfirmName] = useState('');
 
   useEffect(() => { fetchSchools(); }, []);
 
   async function fetchSchools() {
     setLoading(true);
-    const { data: schoolList } = await supabase.from('schools').select('*').order('created_at', { ascending: false });
+    const { data: schoolList } = await supabase
+      .from('schools')
+      .select('*')
+      .order('created_at', { ascending: false });
     if (!schoolList) { setLoading(false); return; }
 
     const enriched: SchoolRecord[] = await Promise.all(schoolList.map(async (s) => {
-      const { count } = await supabase.from('students').select('*', { count: 'exact', head: true }).eq('school_id', s.id);
+      const { count } = await supabase
+        .from('students')
+        .select('*', { count: 'exact', head: true })
+        .eq('school_id', s.id);
       return { ...s, student_count: count || 0 };
     }));
     setSchools(enriched);
     setLoading(false);
   }
 
+  // ── Delete school — removes school record + auth user ─────
+  async function deleteSchool() {
+    if (!deleteTarget || !adminSupabase) return;
+    if (deleteConfirmName.trim() !== deleteTarget.name.trim()) {
+      setMessage({ type: 'error', text: '❌ School name does not match. Please type it exactly.' });
+      return;
+    }
+
+    setDeleting(true);
+    setMessage(null);
+
+    try {
+      // Step 1: Get all user_ids linked to this school
+      const { data: members } = await supabase
+        .from('school_members')
+        .select('user_id')
+        .eq('school_id', deleteTarget.id);
+
+      // Step 2: Delete the school record
+      // This cascades and deletes: school_members, school_settings,
+      // students, classes, fee_records, attendance_records,
+      // announcements, school_holidays automatically
+      const { error: schoolDeleteError } = await supabase
+        .from('schools')
+        .delete()
+        .eq('id', deleteTarget.id);
+
+      if (schoolDeleteError) throw new Error('Failed to delete school: ' + schoolDeleteError.message);
+
+      // Step 3: Delete auth users (login credentials)
+      // Done AFTER school deletion so cascade works first
+      if (members && members.length > 0) {
+        for (const member of members) {
+          await adminSupabase.auth.admin.deleteUser(member.user_id);
+        }
+      }
+
+      setMessage({
+        type: 'success',
+        text: `✅ "${deleteTarget.name}" and all its data has been permanently deleted.`,
+      });
+      setDeleteTarget(null);
+      setDeleteConfirmName('');
+      fetchSchools();
+    } catch (err: any) {
+      setMessage({ type: 'error', text: '❌ ' + err.message });
+    }
+
+    setDeleting(false);
+  }
+
   async function createSchool() {
     setSaving(true);
     setMessage(null);
     try {
-      // 1. Create auth user via Supabase Admin API
-      // Call Edge Function to create user securely
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch(`${SUPABASE_URL}/functions/v1/Create-user`, {
         method: 'POST',
@@ -65,19 +121,18 @@ export default function AdminPanel({ onLogout }: Props) {
           'Authorization': `Bearer ${session?.access_token}`,
           'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
         },
-        body: JSON.stringify({ 
-  email: form.email, 
-  password: form.password,
-  schoolName: form.school_name,
-  principalName: form.principal_name,
-  city: form.city
-}),
+        body: JSON.stringify({
+          email: form.email,
+          password: form.password,
+          schoolName: form.school_name,
+          principalName: form.principal_name,
+          city: form.city,
+        }),
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || 'Failed to create user');
       const userId = result.id;
 
-      // 2. Create school record
       const slug = form.school_name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') + '-' + Date.now();
       const { data: schoolData, error: schoolError } = await supabase
         .from('schools')
@@ -85,7 +140,6 @@ export default function AdminPanel({ onLogout }: Props) {
         .select().single();
       if (schoolError) throw new Error(schoolError.message);
 
-      // 3. Create school settings
       await supabase.from('school_settings').insert({
         school_id: schoolData.id,
         school_name: form.school_name,
@@ -93,14 +147,13 @@ export default function AdminPanel({ onLogout }: Props) {
         address: form.city,
       });
 
-      // 4. Link user to school
       await supabase.from('school_members').insert({
         school_id: schoolData.id,
         user_id: userId,
         role: 'admin',
       });
 
-      setMessage({ type: 'success', text: `✅ School "${form.school_name}" created successfully! Login: ${form.email}` });
+      setMessage({ type: 'success', text: `✅ School "${form.school_name}" created! Login: ${form.email}` });
       setForm({ school_name: '', principal_name: '', city: '', email: '', password: '' });
       setShowModal(false);
       fetchSchools();
@@ -216,7 +269,7 @@ export default function AdminPanel({ onLogout }: Props) {
                       </p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
                     <span className={`px-3 py-1 rounded-full text-xs font-medium ${school.is_active ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                       {school.is_active ? 'Active' : 'Disabled'}
                     </span>
@@ -226,6 +279,14 @@ export default function AdminPanel({ onLogout }: Props) {
                     >
                       {school.is_active ? <><Ban className="w-3 h-3" /> Disable</> : <><CheckCircle className="w-3 h-3" /> Enable</>}
                     </button>
+                    {/* ── Delete button ── */}
+                    <button
+                      onClick={() => { setDeleteTarget(school); setDeleteConfirmName(''); }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
+                      title="Permanently delete this school"
+                    >
+                      <Trash2 className="w-3 h-3" /> Delete
+                    </button>
                   </div>
                 </div>
               ))}
@@ -234,7 +295,68 @@ export default function AdminPanel({ onLogout }: Props) {
         </div>
       </div>
 
-      {/* Add School Modal */}
+      {/* ── Delete Confirmation Modal ──────────────────────── */}
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+            <div className="flex items-center gap-3 p-6 border-b border-red-100 bg-red-50 rounded-t-2xl">
+              <div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-red-800">Delete School Permanently</h3>
+                <p className="text-red-500 text-xs mt-0.5">This action cannot be undone</p>
+              </div>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-slate-600">
+                You are about to permanently delete <strong className="text-slate-800">{deleteTarget.name}</strong> and all its data including:
+              </p>
+              <ul className="text-sm text-slate-500 space-y-1 ml-4 list-disc">
+                <li>All students ({deleteTarget.student_count} records)</li>
+                <li>All classes, fees, attendance records</li>
+                <li>All notices and settings</li>
+                <li>The school's login credentials</li>
+              </ul>
+
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-700">
+                To confirm, type the school name exactly: <strong>{deleteTarget.name}</strong>
+              </div>
+
+              <input
+                type="text"
+                value={deleteConfirmName}
+                onChange={e => setDeleteConfirmName(e.target.value)}
+                placeholder={`Type "${deleteTarget.name}" to confirm`}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex gap-3 p-6 pt-0">
+              <button
+                onClick={() => { setDeleteTarget(null); setDeleteConfirmName(''); }}
+                className="flex-1 border border-slate-200 text-slate-600 py-2.5 rounded-lg hover:bg-slate-50 transition-colors text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={deleteSchool}
+                disabled={deleting || deleteConfirmName.trim() !== deleteTarget.name.trim()}
+                className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white py-2.5 rounded-lg font-medium transition-colors flex items-center justify-center gap-2 text-sm"
+              >
+                {deleting
+                  ? <><Loader className="w-4 h-4 animate-spin" /> Deleting...</>
+                  : <><Trash2 className="w-4 h-4" /> Delete Permanently</>
+                }
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add School Modal — unchanged */}
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
