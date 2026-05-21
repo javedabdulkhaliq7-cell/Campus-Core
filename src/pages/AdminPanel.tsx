@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { createClient } from '@supabase/supabase-js';
 import { Shield, Plus, School, Users, Ban, CheckCircle, LogOut, Eye, EyeOff, X, Loader, Trash2, AlertTriangle } from 'lucide-react';
@@ -32,10 +32,13 @@ export default function AdminPanel({ onLogout }: Props) {
   });
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // ── Delete confirmation state ─────────────────────────────
+  // Delete confirmation state
   const [deleteTarget, setDeleteTarget] = useState<SchoolRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
+
+  // Lock to prevent duplicate submissions
+  const isCreatingRef = useRef(false);
 
   useEffect(() => { fetchSchools(); }, []);
 
@@ -58,7 +61,6 @@ export default function AdminPanel({ onLogout }: Props) {
     setLoading(false);
   }
 
-  // ── Delete school — removes school record + auth user ─────
   async function deleteSchool() {
     if (!deleteTarget || !adminSupabase) return;
     if (deleteConfirmName.trim() !== deleteTarget.name.trim()) {
@@ -70,16 +72,11 @@ export default function AdminPanel({ onLogout }: Props) {
     setMessage(null);
 
     try {
-      // Step 1: Get all user_ids linked to this school
       const { data: members } = await supabase
         .from('school_members')
         .select('user_id')
         .eq('school_id', deleteTarget.id);
 
-      // Step 2: Delete the school record
-      // This cascades and deletes: school_members, school_settings,
-      // students, classes, fee_records, attendance_records,
-      // announcements, school_holidays automatically
       const { error: schoolDeleteError } = await supabase
         .from('schools')
         .delete()
@@ -87,8 +84,6 @@ export default function AdminPanel({ onLogout }: Props) {
 
       if (schoolDeleteError) throw new Error('Failed to delete school: ' + schoolDeleteError.message);
 
-      // Step 3: Delete auth users (login credentials)
-      // Done AFTER school deletion so cascade works first
       if (members && members.length > 0) {
         for (const member of members) {
           await adminSupabase.auth.admin.deleteUser(member.user_id);
@@ -109,7 +104,11 @@ export default function AdminPanel({ onLogout }: Props) {
     setDeleting(false);
   }
 
+  // Fixed: ONLY call edge function – NO extra inserts
   async function createSchool() {
+    if (isCreatingRef.current) return;
+    isCreatingRef.current = true;
+
     setSaving(true);
     setMessage(null);
     try {
@@ -130,28 +129,7 @@ export default function AdminPanel({ onLogout }: Props) {
         }),
       });
       const result = await res.json();
-      if (!res.ok) throw new Error(result.error || 'Failed to create user');
-      const userId = result.id;
-
-      const slug = form.school_name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') + '-' + Date.now();
-      const { data: schoolData, error: schoolError } = await supabase
-        .from('schools')
-        .insert({ name: form.school_name, slug, is_active: true })
-        .select().single();
-      if (schoolError) throw new Error(schoolError.message);
-
-      await supabase.from('school_settings').insert({
-        school_id: schoolData.id,
-        school_name: form.school_name,
-        principal_name: form.principal_name,
-        address: form.city,
-      });
-
-      await supabase.from('school_members').insert({
-        school_id: schoolData.id,
-        user_id: userId,
-        role: 'admin',
-      });
+      if (!res.ok) throw new Error(result.error || 'Failed to create school');
 
       setMessage({ type: 'success', text: `✅ School "${form.school_name}" created! Login: ${form.email}` });
       setForm({ school_name: '', principal_name: '', city: '', email: '', password: '' });
@@ -159,8 +137,10 @@ export default function AdminPanel({ onLogout }: Props) {
       fetchSchools();
     } catch (err: any) {
       setMessage({ type: 'error', text: '❌ ' + err.message });
+    } finally {
+      setSaving(false);
+      isCreatingRef.current = false;
     }
-    setSaving(false);
   }
 
   async function toggleSchool(school: SchoolRecord) {
@@ -279,7 +259,6 @@ export default function AdminPanel({ onLogout }: Props) {
                     >
                       {school.is_active ? <><Ban className="w-3 h-3" /> Disable</> : <><CheckCircle className="w-3 h-3" /> Enable</>}
                     </button>
-                    {/* ── Delete button ── */}
                     <button
                       onClick={() => { setDeleteTarget(school); setDeleteConfirmName(''); }}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
@@ -295,7 +274,7 @@ export default function AdminPanel({ onLogout }: Props) {
         </div>
       </div>
 
-      {/* ── Delete Confirmation Modal ──────────────────────── */}
+      {/* Delete Confirmation Modal */}
       {deleteTarget && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
@@ -356,7 +335,7 @@ export default function AdminPanel({ onLogout }: Props) {
         </div>
       )}
 
-      {/* Add School Modal — unchanged */}
+      {/* Add School Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
@@ -402,10 +381,15 @@ export default function AdminPanel({ onLogout }: Props) {
               </div>
             </div>
             <div className="flex gap-3 p-6 pt-0">
-              <button onClick={() => setShowModal(false)} className="flex-1 border border-slate-200 text-slate-600 py-2.5 rounded-lg hover:bg-slate-50 transition-colors">
+              <button
+                type="button"
+                onClick={() => setShowModal(false)}
+                className="flex-1 border border-slate-200 text-slate-600 py-2.5 rounded-lg hover:bg-slate-50 transition-colors"
+              >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={createSchool}
                 disabled={saving || !form.school_name || !form.email || !form.password}
                 className="flex-1 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white py-2.5 rounded-lg font-medium transition-colors flex items-center justify-center gap-2"

@@ -20,7 +20,7 @@ interface Stats {
 }
 
 export default function Dashboard() {
-  const { schoolName } = useSchool();
+  const { schoolName } = useSchool(); // only for display name
   const [stats, setStats] = useState<Stats>({
     totalStudents: 0, activeStudents: 0, todayPresent: 0, todayAbsent: 0,
     todayAttendanceRate: 0, monthlyFeeCollected: 0, monthlyFeePending: 0,
@@ -33,15 +33,62 @@ export default function Dashboard() {
   const currentMonth = today.getMonth() + 1;
   const currentYear = today.getFullYear();
 
+  // Directly fetch the school_id from school_members using the logged-in user
+  const [schoolId, setSchoolId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchSchoolId = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data, error } = await supabase
+        .from('school_members')
+        .select('school_id')
+        .eq('user_id', user.id)
+        .single();
+      if (error) {
+        console.error('Failed to fetch school_id:', error);
+        return;
+      }
+      if (data) setSchoolId(data.school_id);
+    };
+    fetchSchoolId();
+  }, []);
+
   async function fetchStats() {
+    if (!schoolId) {
+      // Wait until we have the school ID
+      return;
+    }
+
     setLoading(true);
     try {
-      const [studentsRes, attendanceRes, feesRes, classesRes] = await Promise.all([
-        supabase.from('students').select('id, is_active'),
-        supabase.from('attendance_records').select('status').eq('attendance_date', todayStr),
-        supabase.from('fee_records').select('total_amount, amount_paid, status, payment_date, student_id').eq('fee_year', currentYear).eq('fee_month', currentMonth),
-        supabase.from('classes').select('id').eq('academic_year', currentYear),
-      ]);
+      // Students for this school only
+      const studentsRes = await supabase
+        .from('students')
+        .select('id, is_active')
+        .eq('school_id', schoolId);
+
+      // Attendance for today, school-filtered
+      const attendanceRes = await supabase
+        .from('attendance_records')
+        .select('status')
+        .eq('attendance_date', todayStr)
+        .eq('school_id', schoolId);
+
+      // Fee records for current month/year, school-filtered
+      const feesRes = await supabase
+        .from('fee_records')
+        .select('total_amount, amount_paid, status, payment_date, student_id')
+        .eq('fee_year', currentYear)
+        .eq('fee_month', currentMonth)
+        .eq('school_id', schoolId);
+
+      // Classes for this school
+      const classesRes = await supabase
+        .from('classes')
+        .select('id')
+        .eq('academic_year', currentYear)
+        .eq('school_id', schoolId);
 
       const students = studentsRes.data || [];
       const attendance = attendanceRes.data || [];
@@ -70,10 +117,15 @@ export default function Dashboard() {
         defaulterCount: defaulters,
       });
 
+      // Recent fee payments (only for this school)
       const recentPaid = fees.filter(f => f.status === 'Paid' && f.payment_date).slice(0, 5);
       if (recentPaid.length > 0) {
         const studentIds = recentPaid.map(f => f.student_id);
-        const { data: studentNames } = await supabase.from('students').select('id, full_name').in('id', studentIds);
+        const { data: studentNames } = await supabase
+          .from('students')
+          .select('id, full_name')
+          .in('id', studentIds)
+          .eq('school_id', schoolId);
         const nameMap = Object.fromEntries((studentNames || []).map(s => [s.id, s.full_name]));
         setRecentFees(recentPaid.map(f => ({
           name: nameMap[f.student_id] || 'Unknown',
@@ -81,13 +133,21 @@ export default function Dashboard() {
           date: f.payment_date || '',
           status: f.status,
         })));
+      } else {
+        setRecentFees([]);
       }
+    } catch (err) {
+      console.error('Dashboard fetch error:', err);
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => { fetchStats(); }, []);
+  useEffect(() => {
+    if (schoolId) {
+      fetchStats();
+    }
+  }, [schoolId]);
 
   const statCards = [
     { label: 'Total Students', value: stats.activeStudents, sub: `${stats.totalStudents} enrolled total`, icon: Users, light: 'bg-blue-50', text: 'text-blue-600' },

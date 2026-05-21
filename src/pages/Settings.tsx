@@ -647,7 +647,7 @@ function GradeSystemSection({ schoolId }: { schoolId: string }) {
   );
 }
 
-// ─── Main Settings Page ───────────────────────────────────────
+// ─── Main Settings Page (fixed to always show sections) ──────
 export default function Settings() {
   const { settings, updateSettings } = useSchool();
   const [schoolName, setSchoolName] = useState(settings?.school_name || '');
@@ -661,14 +661,45 @@ export default function Settings() {
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // Fallback: fetch school_id directly from school_members if hook doesn't provide it
+  const [directSchoolId, setDirectSchoolId] = useState<string>('');
+
+  useEffect(() => {
+    if (settings?.school_id) {
+      setDirectSchoolId(settings.school_id);
+      return;
+    }
+    const fetchSchoolId = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase
+        .from('school_members')
+        .select('school_id')
+        .eq('user_id', user.id)
+        .single();
+      if (data) setDirectSchoolId(data.school_id);
+    };
+    fetchSchoolId();
+  }, [settings?.school_id]);
+
   async function handleSave() {
     setSaving(true);
-    await updateSettings({ school_name: schoolName, principal_name: principalName, address, phone, email, website, registration_number: registrationNumber, established_year: establishedYear });
-    setSaving(false); setSaved(true);
+    await updateSettings({
+      school_name: schoolName,
+      principal_name: principalName,
+      address,
+      phone,
+      email,
+      website,
+      registration_number: registrationNumber,
+      established_year: establishedYear,
+    });
+    setSaving(false);
+    setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
 
-  const schoolId = settings?.school_id || '';
+  const activeSchoolId = settings?.school_id || directSchoolId;
 
   return (
     <div className="space-y-5 animate-fade-in max-w-2xl">
@@ -721,7 +752,8 @@ export default function Settings() {
           <input className="input" value={website} onChange={e => setWebsite(e.target.value)} />
         </div>
         <button onClick={handleSave} disabled={saving} className="btn-primary">
-          <Save className="w-4 h-4" />{saving ? 'Saving...' : saved ? 'Saved!' : 'Save Settings'}
+          <Save className="w-4 h-4" />
+          {saving ? 'Saving...' : saved ? 'Saved!' : 'Save Settings'}
         </button>
         {saved && (
           <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg flex items-start gap-2">
@@ -731,10 +763,15 @@ export default function Settings() {
         )}
       </div>
 
-      {schoolId && <AttendanceSettingsSection schoolId={schoolId} />}
-      {schoolId && <SubjectsSettingsSection schoolId={schoolId} />}
-      {schoolId && <ExamStructureSection schoolId={schoolId} />}
-      {schoolId && <GradeSystemSection schoolId={schoolId} />}
+      {/* Attendance, Subjects, Exam Structure, Grade System – always shown when schoolId is available */}
+      {activeSchoolId && (
+        <>
+          <AttendanceSettingsSection schoolId={activeSchoolId} />
+          <SubjectsSettingsSection schoolId={activeSchoolId} />
+          <ExamStructureSection schoolId={activeSchoolId} />
+          <GradeSystemSection schoolId={activeSchoolId} />
+        </>
+      )}
 
       {/* System Information */}
       <div className="card space-y-3">
@@ -743,7 +780,12 @@ export default function Settings() {
           <h3 className="font-semibold text-slate-800">System Information</h3>
         </div>
         <div className="grid grid-cols-2 gap-3 text-sm">
-          {[['Platform', APP_NAME], ['Current School', schoolName || 'My School'], ['Data Coverage', '10-Year History'], ['Version', 'v2.0']].map(([l, v]) => (
+          {[
+            ['Platform', APP_NAME],
+            ['Current School', schoolName || 'My School'],
+            ['Data Coverage', '10-Year History'],
+            ['Version', 'v2.0']
+          ].map(([l, v]) => (
             <div key={l as string} className="bg-slate-50 rounded-xl p-3">
               <p className="text-slate-400 text-xs">{l}</p>
               <p className="font-medium text-slate-700 mt-0.5">{v}</p>
