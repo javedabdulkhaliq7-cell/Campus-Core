@@ -4,6 +4,7 @@ import { SchoolProvider, useSchool } from './lib/schoolContext';
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
 import Students from './pages/Students';
+import StudentProfiles from './pages/StudentProfiles';
 import Fees from './pages/Fees';
 import Attendance from './pages/Attendance';
 import Reports from './pages/Reports';
@@ -18,11 +19,12 @@ import { Menu, X, School, LogOut } from 'lucide-react';
 
 const isAdminRoute = window.location.pathname === '/admin';
 
-type Page = 'dashboard' | 'students' | 'fees' | 'attendance' | 'reports' | 'classes' | 'announcements' | 'settings' | 'results';
+type Page = 'dashboard' | 'students' | 'profiles' | 'fees' | 'attendance' | 'reports' | 'classes' | 'announcements' | 'settings' | 'results';
 
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: 'Principal Dashboard',
   students: 'Student Management',
+  profiles: 'Student Profiles',
   fees: 'Fee Management',
   attendance: 'Daily Attendance',
   reports: 'Reports & Analytics',
@@ -79,6 +81,7 @@ function AppContent() {
   const pages: Record<Page, JSX.Element> = {
     dashboard: <Dashboard />,
     students: <Students />,
+    profiles: <StudentProfiles />,
     fees: <Fees />,
     attendance: <Attendance />,
     reports: <Reports />,

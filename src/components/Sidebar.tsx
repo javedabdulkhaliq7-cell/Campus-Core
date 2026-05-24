@@ -1,11 +1,11 @@
 import {
   LayoutDashboard, Users, CreditCard, CalendarCheck,
   BarChart3, GraduationCap, Bell, Settings, ChevronRight,
-  School, ClipboardList,
+  School, ClipboardList, UserCircle,
 } from 'lucide-react';
 import { APP_NAME } from '../lib/supabase';
 
-type Page = 'dashboard' | 'students' | 'fees' | 'attendance' | 'reports' | 'classes' | 'announcements' | 'settings' | 'results';
+type Page = 'dashboard' | 'students' | 'profiles' | 'fees' | 'attendance' | 'reports' | 'classes' | 'announcements' | 'settings' | 'results';
 
 interface SidebarProps {
   currentPage: Page;
@@ -17,6 +17,7 @@ interface SidebarProps {
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'students', label: 'Students', icon: Users },
+  { id: 'profiles', label: 'Student Profiles', icon: UserCircle },
   { id: 'fees', label: 'Fee Management', icon: CreditCard },
   { id: 'attendance', label: 'Attendance', icon: CalendarCheck },
   { id: 'results', label: 'Results', icon: ClipboardList },
