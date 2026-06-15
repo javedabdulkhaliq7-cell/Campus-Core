@@ -1,113 +1,206 @@
-import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
-import { supabase, School, SchoolSettings } from './supabase';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { supabase } from './supabase';
+import type { Subscription } from './supabase';
+
+// ── Types ────────────────────────────────────────────────────────
+
+interface School {
+  id: string;
+  name: string;
+}
+
+interface SchoolSettings {
+  id: string;
+  school_id: string;
+  school_name: string;
+  principal_name: string;
+  address: string;
+  phone: string;
+  email: string;
+  website: string;
+  registration_number: string;
+  established_year?: number | null;
+  logo_url?: string | null;
+  weekly_off_days: number[];
+  updated_at?: string;
+}
 
 interface SchoolContextType {
+  // School
   school: School | null;
   settings: SchoolSettings | null;
   schoolId: string | null;
   schoolName: string;
+  schoolLogo: string | null;
   loading: boolean;
-  updateSettings: (newSettings: Partial<SchoolSettings>) => Promise<void>;
+  // Subscription
+  subscription: Subscription | null;
+  subscriptionLoading: boolean;
+  isSubscriptionActive: boolean;
+  isOnTrial: boolean;
+  trialDaysLeft: number;
+  // Actions
+  updateSettings: (updates: Partial<SchoolSettings>) => Promise<void>;
   refreshSettings: () => Promise<void>;
+  refreshSubscription: () => Promise<void>;
 }
 
-const SchoolContext = createContext<SchoolContextType | undefined>(undefined);
+// ── Context ──────────────────────────────────────────────────────
 
-export function SchoolProvider({ children }: { children: ReactNode }) {
+const SchoolContext = createContext<SchoolContextType | null>(null);
+
+// ── Provider ─────────────────────────────────────────────────────
+
+export function SchoolProvider({ children }: { children: React.ReactNode }) {
   const [school, setSchool] = useState<School | null>(null);
   const [settings, setSettings] = useState<SchoolSettings | null>(null);
+  const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [loading, setLoading] = useState(true);
-  const [userId, setUserId] = useState<string | null>(null);
+  const [subscriptionLoading, setSubscriptionLoading] = useState(true);
 
-  const fetchSchoolData = useCallback(async (uid: string) => {
-    setLoading(true);
+  // ── Fetch school + settings ──────────────────────────────────
+  const fetchSchoolData = useCallback(async () => {
     try {
-      const { data: member, error: memberError } = await supabase
+      setLoading(true);
+
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const { data: member } = await supabase
         .from('school_members')
         .select('school_id')
-        .eq('user_id', uid)
-        .maybeSingle();
+        .eq('user_id', user.id)
+        .single();
 
-      if (memberError) { console.error('school_members error:', memberError); setLoading(false); return; }
-      if (!member) { console.warn('No school member found for user:', uid); setLoading(false); return; }
+      if (!member) return;
 
-      const { data: schoolData, error: schoolError } = await supabase
-        .from('schools')
-        .select('*')
-        .eq('id', member.school_id)
-        .maybeSingle();
+      const [{ data: schoolData }, { data: settingsData }] = await Promise.all([
+        supabase.from('schools').select('id, name').eq('id', member.school_id).single(),
+        supabase.from('school_settings').select('*').eq('school_id', member.school_id).single(),
+      ]);
 
-      if (schoolError) { console.error('schools error:', schoolError); }
       if (schoolData) setSchool(schoolData);
-
-      const { data: settingsData, error: settingsError } = await supabase
-        .from('school_settings')
-        .select('*')
-        .eq('school_id', member.school_id)
-        .maybeSingle();
-
-      if (settingsError) { console.error('school_settings error:', settingsError); }
       if (settingsData) setSettings(settingsData);
+    } catch (err) {
+      console.error('Error fetching school data:', err);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    // Get current session immediately
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        setUserId(session.user.id);
-        fetchSchoolData(session.user.id);
-      } else {
-        setLoading(false);
-      }
-    });
+  // ── Fetch subscription ───────────────────────────────────────
+  const fetchSubscription = useCallback(async () => {
+    try {
+      setSubscriptionLoading(true);
 
-    // Also listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        setUserId(session.user.id);
-        fetchSchoolData(session.user.id);
-      } else {
-        setUserId(null);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const { data: member } = await supabase
+        .from('school_members')
+        .select('school_id')
+        .eq('user_id', user.id)
+        .single();
+
+      if (!member) return;
+
+      const { data: sub } = await supabase
+        .from('subscriptions')
+        .select('*')
+        .eq('school_id', member.school_id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (sub) setSubscription(sub);
+    } catch (err) {
+      console.error('Error fetching subscription:', err);
+    } finally {
+      setSubscriptionLoading(false);
+    }
+  }, []);
+
+  // ── Auth state listener ──────────────────────────────────────
+  useEffect(() => {
+    fetchSchoolData();
+    fetchSubscription();
+
+    const { data: { subscription: authSub } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_IN') {
+        fetchSchoolData();
+        fetchSubscription();
+      }
+      if (event === 'SIGNED_OUT') {
         setSchool(null);
         setSettings(null);
-        setLoading(false);
+        setSubscription(null);
       }
     });
 
-    return () => subscription.unsubscribe();
-  }, [fetchSchoolData]);
+    return () => authSub.unsubscribe();
+  }, [fetchSchoolData, fetchSubscription]);
 
-  const updateSettings = async (newSettings: Partial<SchoolSettings>) => {
-    if (!settings) return;
-    const { data, error } = await supabase
+  // ── Update settings ──────────────────────────────────────────
+  const updateSettings = async (updates: Partial<SchoolSettings>) => {
+    if (!settings?.id) return;
+    const { data } = await supabase
       .from('school_settings')
-      .update({ ...newSettings, updated_at: new Date().toISOString() })
+      .update(updates)
       .eq('id', settings.id)
       .select()
       .single();
-    if (!error && data) setSettings(data);
+    if (data) setSettings(data);
   };
 
+  // ── Computed subscription state ──────────────────────────────
+  const now = new Date();
+
+  const isOnTrial =
+    !!subscription?.trial_ends_at &&
+    new Date(subscription.trial_ends_at) > now &&
+    (subscription.status === 'trial' || subscription.status === 'pending_payment');
+
+  const isSubscriptionActive =
+    subscription?.status === 'active' || isOnTrial;
+
+  const trialDaysLeft = subscription?.trial_ends_at
+    ? Math.max(
+        0,
+        Math.ceil(
+          (new Date(subscription.trial_ends_at).getTime() - now.getTime()) /
+            (1000 * 60 * 60 * 24),
+        ),
+      )
+    : 0;
+
   return (
-    <SchoolContext.Provider value={{
-      school,
-      settings,
-      schoolId: school?.id || null,
-      schoolName: settings?.school_name || school?.name || 'My School',
-      loading,
-      updateSettings,
-      refreshSettings: () => userId ? fetchSchoolData(userId) : Promise.resolve(),
-    }}>
+    <SchoolContext.Provider
+      value={{
+        school,
+        settings,
+        schoolId: school?.id ?? null,
+        schoolName: settings?.school_name ?? school?.name ?? 'Campus Core',
+        schoolLogo: settings?.logo_url ?? null,
+        loading,
+        subscription,
+        subscriptionLoading,
+        isSubscriptionActive,
+        isOnTrial,
+        trialDaysLeft,
+        updateSettings,
+        refreshSettings: fetchSchoolData,
+        refreshSubscription: fetchSubscription,
+      }}
+    >
       {children}
     </SchoolContext.Provider>
   );
 }
 
-export function useSchool() {
-  const context = useContext(SchoolContext);
-  if (!context) throw new Error('useSchool must be used within SchoolProvider');
-  return context;
+// ── Hook ─────────────────────────────────────────────────────────
+
+export function useSchool(): SchoolContextType {
+  const ctx = useContext(SchoolContext);
+  if (!ctx) throw new Error('useSchool must be used inside <SchoolProvider>');
+  return ctx;
 }

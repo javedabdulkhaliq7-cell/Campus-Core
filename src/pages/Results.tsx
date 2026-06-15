@@ -26,6 +26,9 @@ interface SavedResult {
   obtained_marks: number;
   grade: string;
   pass_fail: string;
+  exam_type: string;
+  exam_month: number | null;
+  exam_year: number;
 }
 
 const MONTHS = [
@@ -58,9 +61,382 @@ function getOrdinal(n: number) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
+function examGroupLabel(examType: string, examMonth: number | null, examYear: number): string {
+  if (examType === 'monthly') {
+    const mo = MONTHS.find(m => m.value === examMonth)?.label ?? '';
+    return `Monthly Test — ${mo} ${examYear}`;
+  }
+  if (examType === 'midterm') return `Midterm Examination — ${examYear}`;
+  return `Annual Examination — ${examYear}`;
+}
+
+function examGroupKey(examType: string, examMonth: number | null, examYear: number): string {
+  return `${examType}_${examMonth ?? 0}_${examYear}`;
+}
+
+// Sort order: monthly (by month) < midterm < annual
+function examGroupSortOrder(examType: string, examMonth: number | null): number {
+  if (examType === 'monthly') return (examMonth ?? 0);
+  if (examType === 'midterm') return 100;
+  return 200;
+}
+
+// ─── Print helpers ─────────────────────────────────────────────
+function printHTML(html: string, title = 'Print') {
+  const win = window.open('', '_blank', 'width=960,height=700');
+  if (!win) return;
+  win.document.write(`<!DOCTYPE html><html><head><title>${title}</title>
+    <style>* { margin:0; padding:0; box-sizing:border-box; } body { font-family:'Segoe UI',Arial,sans-serif; background:#fff; }
+    @media print { @page { size:A4; margin:0; } }</style>
+  </head><body>${html}</body></html>`);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 400);
+}
+
+interface ExamGroup {
+  examType: string;
+  examMonth: number | null;
+  examYear: number;
+  label: string;
+  rows: SavedResult[];
+  totalObtained: number;
+  totalMax: number;
+  percentage: number;
+  passFail: string;
+  grade: string;
+}
+
+function buildExamGroupsForStudent(allResults: SavedResult[], gradeSystem: GradeSystem, gradeRanges: GradeRange[]): ExamGroup[] {
+  const map: Record<string, ExamGroup> = {};
+  allResults.forEach(r => {
+    const key = examGroupKey(r.exam_type, r.exam_month, r.exam_year);
+    if (!map[key]) {
+      map[key] = {
+        examType: r.exam_type,
+        examMonth: r.exam_month,
+        examYear: r.exam_year,
+        label: examGroupLabel(r.exam_type, r.exam_month, r.exam_year),
+        rows: [],
+        totalObtained: 0, totalMax: 0, percentage: 0, passFail: 'pass', grade: '',
+      };
+    }
+    // Deduplicate by subject_name — keep only the first occurrence per subject
+    const alreadyHasSubject = map[key].rows.some(existing => existing.subject_name === r.subject_name);
+    if (!alreadyHasSubject) {
+      map[key].rows.push(r);
+    }
+  });
+  // Compute totals per group
+  Object.values(map).forEach(g => {
+    g.totalObtained = g.rows.reduce((s, r) => s + r.obtained_marks, 0);
+    g.totalMax      = g.rows.reduce((s, r) => s + r.total_marks, 0);
+    g.percentage    = calcPercentage(g.totalObtained, g.totalMax);
+    g.passFail      = g.rows.every(r => r.pass_fail === 'pass') ? 'pass' : 'fail';
+    g.grade         = gradeSystem.grade_mode === 'letter' ? getGradeLabel(g.percentage, gradeRanges) : `${g.percentage}%`;
+  });
+  return Object.values(map).sort((a, b) =>
+    examGroupSortOrder(a.examType, a.examMonth) - examGroupSortOrder(b.examType, b.examMonth)
+  );
+}
+
+function printSingleExamCard(
+  student: Student,
+  group: ExamGroup,
+  schoolName: string,
+  logoUrl: string | null,
+  selectedGrade: number,
+  position: number,
+  gradeSystem: GradeSystem,
+) {
+  const rowsHTML = group.rows.map(r => {
+    const pct = calcPercentage(r.obtained_marks, r.total_marks);
+    return `
+      <tr style="border-bottom:1px solid #f1f5f9;">
+        <td style="padding:7px 10px;font-size:12px;color:#1e293b;font-weight:500;">${r.subject_name}</td>
+        <td style="padding:7px 10px;font-size:12px;text-align:center;font-weight:700;color:#1e293b;">${r.obtained_marks}</td>
+        <td style="padding:7px 10px;font-size:12px;text-align:center;color:#64748b;">${r.total_marks}</td>
+        <td style="padding:7px 10px;font-size:12px;text-align:center;font-weight:600;color:${pct >= gradeSystem.passing_percentage ? '#059669' : '#dc2626'};">${pct}%</td>
+        ${gradeSystem.grade_mode === 'letter' ? `<td style="padding:7px 10px;font-size:12px;text-align:center;font-weight:700;color:#475569;">${r.grade}</td>` : ''}
+        <td style="padding:7px 10px;font-size:11px;text-align:center;">
+          <span style="background:${r.pass_fail==='pass'?'#d1fae5':'#fee2e2'};color:${r.pass_fail==='pass'?'#065f46':'#991b1b'};padding:2px 8px;border-radius:20px;font-weight:700;">${r.pass_fail?.toUpperCase()}</span>
+        </td>
+      </tr>`;
+  }).join('');
+
+  const logoHTML = logoUrl
+    ? `<img src="${logoUrl}" style="width:60px;height:60px;border-radius:50%;object-fit:cover;border:2px solid #e2e8f0;margin-bottom:6px;" crossorigin="anonymous" />`
+    : `<div style="display:inline-flex;align-items:center;justify-content:center;width:52px;height:52px;background:#1d4ed8;border-radius:50%;margin-bottom:6px;"><div style="width:28px;height:28px;background:white;border-radius:5px;"></div></div>`;
+
+  const html = `
+    <div style="padding:14mm 16mm;min-height:297mm;font-family:'Segoe UI',Arial,sans-serif;background:white;position:relative;">
+      <div style="position:absolute;inset:8mm;border:2px solid #1d4ed8;border-radius:6px;pointer-events:none;"></div>
+      <div style="position:absolute;inset:10.5mm;border:1px solid #bfdbfe;border-radius:4px;pointer-events:none;"></div>
+
+      <div style="text-align:center;padding-bottom:10px;margin-bottom:10px;border-bottom:2px solid #1d4ed8;">
+        ${logoHTML}
+        <h1 style="font-size:20px;font-weight:800;color:#0f172a;margin:3px 0 2px;">${schoolName}</h1>
+        <p style="font-size:11px;color:#64748b;letter-spacing:2px;text-transform:uppercase;">Official Result Card</p>
+      </div>
+
+      <!-- Exam type banner -->
+      <div style="background:#1e3a8a;color:white;text-align:center;padding:8px 16px;border-radius:8px;margin-bottom:12px;">
+        <p style="font-size:14px;font-weight:800;letter-spacing:1px;text-transform:uppercase;">${group.label}</p>
+        <p style="font-size:11px;color:#bfdbfe;margin-top:2px;">Class ${selectedGrade}</p>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;">
+        ${[
+          ['Student Name', student.full_name],
+          ['Roll No.',     student.roll_number ?? '—'],
+          ['Class',        `Class ${selectedGrade}`],
+          ['Exam',         group.label],
+          ['Position',     getOrdinal(position)],
+          ['Overall',      `${group.totalObtained}/${group.totalMax} (${group.percentage}%)`],
+        ].map(([l,v]) => `
+          <div>
+            <p style="font-size:9px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px;">${l}</p>
+            <p style="font-size:12px;font-weight:600;color:#1e293b;">${v}</p>
+          </div>`).join('')}
+      </div>
+
+      <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:14px;">
+        <table style="width:100%;border-collapse:collapse;">
+          <thead>
+            <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+              ${['Subject','Obtained','Total','%',...(gradeSystem.grade_mode==='letter'?['Grade']:[]),'Result']
+                .map(h=>`<th style="padding:7px 10px;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;${h==='Subject'?'text-align:left':'text-align:center'}">${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>${rowsHTML}</tbody>
+          <tfoot>
+            <tr style="background:#f1f5f9;border-top:2px solid #e2e8f0;">
+              <td style="padding:7px 10px;font-size:11px;font-weight:700;color:#475569;text-transform:uppercase;">Total</td>
+              <td style="padding:7px 10px;text-align:center;font-weight:700;font-size:13px;color:#1e293b;">${group.totalObtained}</td>
+              <td style="padding:7px 10px;text-align:center;font-weight:700;font-size:13px;color:#1e293b;">${group.totalMax}</td>
+              <td style="padding:7px 10px;text-align:center;font-weight:700;color:${group.percentage>=gradeSystem.passing_percentage?'#059669':'#dc2626'};">${group.percentage}%</td>
+              ${gradeSystem.grade_mode==='letter'?`<td style="padding:7px 10px;text-align:center;font-weight:700;color:#7c3aed;">${group.grade}</td>`:''}
+              <td style="padding:7px 10px;text-align:center;">
+                <span style="background:${group.passFail==='pass'?'#d1fae5':'#fee2e2'};color:${group.passFail==='pass'?'#065f46':'#991b1b'};font-size:11px;font-weight:700;padding:2px 10px;border-radius:20px;">${group.passFail==='pass'?'PASS':'FAIL'}</span>
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <div style="background:#1d4ed8;border-radius:8px;padding:10px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <span style="font-size:13px;font-weight:700;color:white;">${group.label} — Result</span>
+        <div style="display:flex;align-items:center;gap:14px;">
+          <span style="font-size:13px;color:#bfdbfe;">${group.totalObtained} / ${group.totalMax}</span>
+          <span style="font-size:15px;font-weight:800;color:white;">${group.percentage}%</span>
+          ${gradeSystem.grade_mode==='letter'?`<span style="font-size:14px;font-weight:800;color:#bfdbfe;">${group.grade}</span>`:''}
+          <span style="background:${group.passFail==='pass'?'#d1fae5':'#fee2e2'};color:${group.passFail==='pass'?'#065f46':'#991b1b'};font-size:12px;font-weight:800;padding:3px 14px;border-radius:20px;">${group.passFail==='pass'?'PASS':'FAIL'}</span>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;margin-top:16mm;">
+        <div style="text-align:center;min-width:140px;">
+          <div style="height:36px;border-bottom:1.5px solid #334155;margin-bottom:4px;"></div>
+          <p style="font-size:10px;font-weight:700;color:#334155;">Class Teacher</p>
+        </div>
+        <div style="text-align:center;min-width:140px;">
+          <div style="height:36px;border-bottom:1.5px solid #334155;margin-bottom:4px;"></div>
+          <p style="font-size:10px;font-weight:700;color:#334155;">Principal</p>
+          <p style="font-size:9px;color:#64748b;margin-top:1px;">${schoolName}</p>
+        </div>
+      </div>
+
+      <p style="position:absolute;bottom:12mm;left:50%;transform:translateX(-50%);font-size:9px;color:#94a3b8;text-align:center;">
+        Issued on ${new Date().toLocaleDateString('en-PK',{day:'2-digit',month:'long',year:'numeric'})} &nbsp;·&nbsp; Campus Core
+      </p>
+    </div>`;
+  printHTML(html, `${group.label} — ${student.full_name}`);
+}
+
+function printAllExams(
+  student: Student,
+  groups: ExamGroup[],
+  schoolName: string,
+  logoUrl: string | null,
+  selectedGrade: number,
+  gradeSystem: GradeSystem,
+) {
+  const grandObt = groups.reduce((s, g) => s + g.totalObtained, 0);
+  const grandTot = groups.reduce((s, g) => s + g.totalMax, 0);
+  const grandPct = calcPercentage(grandObt, grandTot);
+  const allPass  = groups.every(g => g.passFail === 'pass');
+
+  const groupsHTML = groups.map(g => {
+    const rowsHTML = g.rows.map(r => {
+      const pct = calcPercentage(r.obtained_marks, r.total_marks);
+      return `
+        <tr style="border-bottom:1px solid #f1f5f9;">
+          <td style="padding:6px 10px;font-size:11px;color:#1e293b;font-weight:500;">${r.subject_name}</td>
+          <td style="padding:6px 10px;font-size:11px;text-align:center;font-weight:700;color:#1e293b;">${r.obtained_marks}</td>
+          <td style="padding:6px 10px;font-size:11px;text-align:center;color:#64748b;">${r.total_marks}</td>
+          <td style="padding:6px 10px;font-size:11px;text-align:center;font-weight:600;color:${pct>=gradeSystem.passing_percentage?'#059669':'#dc2626'};">${pct}%</td>
+          ${gradeSystem.grade_mode==='letter'?`<td style="padding:6px 10px;font-size:11px;text-align:center;font-weight:700;color:#475569;">${r.grade}</td>`:''}
+          <td style="padding:6px 10px;font-size:10px;text-align:center;">
+            <span style="background:${r.pass_fail==='pass'?'#d1fae5':'#fee2e2'};color:${r.pass_fail==='pass'?'#065f46':'#991b1b'};padding:2px 8px;border-radius:20px;font-weight:700;">${r.pass_fail?.toUpperCase()}</span>
+          </td>
+        </tr>`;
+    }).join('');
+    return `
+      <div style="margin-bottom:16px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;page-break-inside:avoid;">
+        <div style="background:#1e3a8a;padding:7px 12px;display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:12px;font-weight:800;color:white;text-transform:uppercase;letter-spacing:.5px;">${g.label}</span>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span style="font-size:11px;color:#bfdbfe;">${g.totalObtained}/${g.totalMax}</span>
+            <span style="font-size:12px;font-weight:800;color:white;">${g.percentage}%</span>
+            ${gradeSystem.grade_mode==='letter'?`<span style="font-size:11px;font-weight:700;color:#bfdbfe;">${g.grade}</span>`:''}
+            <span style="background:${g.passFail==='pass'?'#d1fae5':'#fee2e2'};color:${g.passFail==='pass'?'#065f46':'#991b1b'};font-size:10px;font-weight:700;padding:2px 10px;border-radius:20px;">${g.passFail==='pass'?'PASS':'FAIL'}</span>
+          </div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead>
+            <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+              ${['Subject','Obtained','Total','%',...(gradeSystem.grade_mode==='letter'?['Grade']:[]),'Result']
+                .map(h=>`<th style="padding:6px 10px;font-size:9px;font-weight:700;color:#94a3b8;text-transform:uppercase;${h==='Subject'?'text-align:left':'text-align:center'}">${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>${rowsHTML}</tbody>
+        </table>
+      </div>`;
+  }).join('');
+
+  const logoHTMLAll = logoUrl
+    ? `<img src="${logoUrl}" style="width:60px;height:60px;border-radius:50%;object-fit:cover;border:2px solid #e2e8f0;margin-bottom:6px;" crossorigin="anonymous" />`
+    : `<div style="display:inline-flex;align-items:center;justify-content:center;width:52px;height:52px;background:#1d4ed8;border-radius:50%;margin-bottom:6px;"><div style="width:28px;height:28px;background:white;border-radius:5px;"></div></div>`;
+
+  const html = `
+    <div style="padding:12mm 14mm;font-family:'Segoe UI',Arial,sans-serif;background:white;position:relative;">
+      <div style="position:absolute;inset:8mm;border:2px solid #1d4ed8;border-radius:6px;pointer-events:none;"></div>
+      <div style="position:absolute;inset:10.5mm;border:1px solid #bfdbfe;border-radius:4px;pointer-events:none;"></div>
+
+      <div style="text-align:center;padding-bottom:10px;margin-bottom:10px;border-bottom:2px solid #1d4ed8;">
+        ${logoHTMLAll}
+        <h1 style="font-size:20px;font-weight:800;color:#0f172a;margin:3px 0 2px;">${schoolName}</h1>
+        <p style="font-size:10px;color:#64748b;letter-spacing:2px;text-transform:uppercase;">Full Year Report Card — Class ${selectedGrade}</p>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;">
+        ${[
+          ['Student Name', student.full_name],
+          ['Roll No.',     student.roll_number ?? '—'],
+          ['Class',        `Class ${selectedGrade}`],
+          ['Exams Included', groups.map(g=>g.label).join(', ')],
+          ['Grand Total',  `${grandObt} / ${grandTot}`],
+          ['Overall %',    `${grandPct}%`],
+        ].map(([l,v])=>`
+          <div${l==='Exams Included'?' style="grid-column:span 2"':''}>
+            <p style="font-size:9px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px;">${l}</p>
+            <p style="font-size:12px;font-weight:600;color:#1e293b;">${v}</p>
+          </div>`).join('')}
+      </div>
+
+      ${groupsHTML}
+
+      <div style="background:#1d4ed8;border-radius:8px;padding:10px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <span style="font-size:13px;font-weight:700;color:white;">Grand Total — All Exams</span>
+        <div style="display:flex;align-items:center;gap:14px;">
+          <span style="font-size:13px;color:#bfdbfe;">${grandObt} / ${grandTot}</span>
+          <span style="font-size:15px;font-weight:800;color:white;">${grandPct}%</span>
+          <span style="background:${allPass?'#d1fae5':'#fee2e2'};color:${allPass?'#065f46':'#991b1b'};font-size:12px;font-weight:800;padding:3px 14px;border-radius:20px;">${allPass?'PASS':'FAIL'}</span>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;margin-top:14mm;">
+        <div style="text-align:center;min-width:140px;">
+          <div style="height:36px;border-bottom:1.5px solid #334155;margin-bottom:4px;"></div>
+          <p style="font-size:10px;font-weight:700;color:#334155;">Class Teacher</p>
+        </div>
+        <div style="text-align:center;min-width:140px;">
+          <div style="height:36px;border-bottom:1.5px solid #334155;margin-bottom:4px;"></div>
+          <p style="font-size:10px;font-weight:700;color:#334155;">Principal</p>
+          <p style="font-size:9px;color:#64748b;margin-top:1px;">${schoolName}</p>
+        </div>
+      </div>
+
+      <p style="position:absolute;bottom:12mm;left:50%;transform:translateX(-50%);font-size:9px;color:#94a3b8;text-align:center;">
+        Issued on ${new Date().toLocaleDateString('en-PK',{day:'2-digit',month:'long',year:'numeric'})} &nbsp;·&nbsp; Campus Core
+      </p>
+    </div>`;
+  printHTML(html, `Full Year Report — ${student.full_name}`);
+}
+
+function printClassMarksheet(
+  withPositions: { student: Student; totalObtained: number; totalMax: number; percentage: number; passFail: string; grade: string; position: number; results: SavedResult[] }[],
+  subjects: Subject[],
+  schoolName: string,
+  logoUrl: string | null,
+  selectedGrade: number,
+  examLabel: string,
+  gradeSystem: GradeSystem,
+) {
+  const rowsHTML = withPositions.map(item => `
+    <tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:6px 8px;text-align:center;font-size:11px;font-weight:700;color:${item.position<=3?'#b45309':'#64748b'};">${item.position}</td>
+      <td style="padding:6px 8px;font-size:12px;font-weight:600;color:#1e293b;">${item.student.full_name}</td>
+      <td style="padding:6px 8px;text-align:center;font-size:11px;color:#64748b;">${item.student.roll_number??'—'}</td>
+      ${subjects.map(sub => {
+        const r = item.results.find(res => res.subject_name === sub.subject_name);
+        return `<td style="padding:6px 8px;text-align:center;font-size:12px;color:#1e293b;">${r ? r.obtained_marks : '—'}</td>`;
+      }).join('')}
+      <td style="padding:6px 8px;text-align:center;font-size:12px;font-weight:700;color:#1e293b;">${item.totalObtained}/${item.totalMax}</td>
+      <td style="padding:6px 8px;text-align:center;font-size:12px;font-weight:700;color:${item.percentage>=gradeSystem.passing_percentage?'#059669':'#dc2626'};">${item.percentage}%</td>
+      ${gradeSystem.grade_mode==='letter'?`<td style="padding:6px 8px;text-align:center;font-size:11px;font-weight:700;color:#7c3aed;">${item.grade}</td>`:''}
+      <td style="padding:6px 8px;text-align:center;">
+        <span style="background:${item.passFail==='pass'?'#d1fae5':'#fee2e2'};color:${item.passFail==='pass'?'#065f46':'#991b1b'};font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;">${item.passFail==='pass'?'PASS':'FAIL'}</span>
+      </td>
+    </tr>`).join('');
+
+  const passed = withPositions.filter(s => s.passFail === 'pass').length;
+  const failed = withPositions.filter(s => s.passFail === 'fail').length;
+  const avg = withPositions.length > 0 ? Math.round(withPositions.reduce((s, i) => s + i.percentage, 0) / withPositions.length) : 0;
+
+  const logoHTMLSheet = logoUrl
+    ? `<img src="${logoUrl}" style="width:52px;height:52px;border-radius:50%;object-fit:cover;border:2px solid #e2e8f0;margin-bottom:4px;" crossorigin="anonymous" />`
+    : `<div style="display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;background:#1d4ed8;border-radius:50%;margin-bottom:4px;"><div style="width:22px;height:22px;background:white;border-radius:4px;"></div></div>`;
+
+  const html = `
+    <div style="padding:12mm 14mm;font-family:'Segoe UI',Arial,sans-serif;background:white;">
+      <div style="text-align:center;padding-bottom:8px;margin-bottom:10px;border-bottom:2px solid #1d4ed8;">
+        ${logoHTMLSheet}
+        <h1 style="font-size:18px;font-weight:800;color:#0f172a;margin:3px 0 2px;">${schoolName}</h1>
+        <div style="display:inline-block;background:#1e3a8a;color:white;padding:3px 14px;border-radius:20px;margin-top:4px;">
+          <p style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">${examLabel} &nbsp;·&nbsp; Class ${selectedGrade}</p>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;">
+        ${[['Total Students',withPositions.length,'#1d4ed8'],['Passed',passed,'#059669'],['Failed',failed,'#dc2626'],['Class Average',`${avg}%`,'#7c3aed']]
+          .map(([l,v,c])=>`<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;text-align:center;">
+            <p style="font-size:9px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">${l}</p>
+            <p style="font-size:18px;font-weight:800;color:${c};">${v}</p>
+          </div>`).join('')}
+      </div>
+      <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead>
+            <tr style="background:#1d4ed8;">
+              ${['#','Student Name','Roll No.',...subjects.map(s=>s.subject_name),'Total','%',...(gradeSystem.grade_mode==='letter'?['Grade']:[]),'Result']
+                .map(h=>`<th style="padding:8px 6px;font-size:9px;font-weight:700;color:white;text-transform:uppercase;letter-spacing:.04em;${h==='Student Name'?'text-align:left':'text-align:center'};white-space:nowrap;">${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>${rowsHTML}</tbody>
+        </table>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:16mm;">
+        <div style="text-align:center;min-width:130px;"><div style="height:32px;border-bottom:1.5px solid #334155;margin-bottom:4px;"></div><p style="font-size:10px;font-weight:700;color:#334155;">Class Teacher</p></div>
+        <div style="text-align:center;min-width:130px;"><div style="height:32px;border-bottom:1.5px solid #334155;margin-bottom:4px;"></div><p style="font-size:10px;font-weight:700;color:#334155;">Principal</p><p style="font-size:9px;color:#64748b;margin-top:1px;">${schoolName}</p></div>
+      </div>
+      <p style="text-align:center;font-size:9px;color:#94a3b8;margin-top:10mm;">Printed on ${new Date().toLocaleDateString('en-PK',{day:'2-digit',month:'long',year:'numeric'})} &nbsp;·&nbsp; Campus Core</p>
+    </div>`;
+  printHTML(html, `Marksheet — Class ${selectedGrade} — ${examLabel}`);
+}
+
 // ─── Main Results Page ────────────────────────────────────────
 export default function Results() {
-  const { settings } = useSchool();
+  const { settings, schoolName } = useSchool();
   const schoolId = settings?.school_id || '';
 
   // Mode: 'entry' or 'view'
@@ -92,6 +468,10 @@ export default function Results() {
   const [savedResults, setSavedResults] = useState<SavedResult[]>([]);
   const [viewLoading, setViewLoading] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+
+  // All exam results for the selected student (all types for the year)
+  const [allStudentResults, setAllStudentResults] = useState<SavedResult[]>([]);
+  const [studentResultsLoading, setStudentResultsLoading] = useState(false);
 
   // Load grade system once
   useEffect(() => {
@@ -198,6 +578,23 @@ export default function Results() {
     };
     load();
   }, [mode, schoolId, selectedGrade, examType, selectedMonth, selectedYear]);
+
+  // When a student is selected in view mode, fetch ALL their results for the year
+  useEffect(() => {
+    if (!selectedStudent || !schoolId) { setAllStudentResults([]); return; }
+    setStudentResultsLoading(true);
+    supabase
+      .from('student_results')
+      .select('*')
+      .eq('school_id', schoolId)
+      .eq('student_id', selectedStudent.id)
+      .eq('exam_year', selectedYear)
+      .eq('class_grade', selectedGrade)
+      .then(({ data }) => {
+        setAllStudentResults(data ?? []);
+        setStudentResultsLoading(false);
+      });
+  }, [selectedStudent, schoolId, selectedYear, selectedGrade]);
 
   const updateObtained = (studentId: string, subjectName: string, value: string) => {
     setResults(prev => prev.map(r =>
@@ -530,115 +927,160 @@ export default function Results() {
               </button>
             </div>
           ) : selectedStudent ? (
-            // ── Individual Student View ──
+            // ── Individual Student View — all exams grouped ──
             <div className="space-y-4">
               <button onClick={() => setSelectedStudent(null)} className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800 font-medium">
                 ← Back to Class Results
               </button>
 
-              {/* Student header */}
-              <div className="card">
-                {(() => {
-                  const sData = withPositions.find(s => s.student.id === selectedStudent.id);
-                  if (!sData) return null;
-                  return (
-                    <div className="space-y-4">
+              {studentResultsLoading ? (
+                <div className="card py-12 text-center text-slate-400">Loading results...</div>
+              ) : (() => {
+                const examGroups = buildExamGroupsForStudent(allStudentResults, gradeSystem, gradeRanges);
+                const sData = withPositions.find(s => s.student.id === selectedStudent.id);
+                const position = sData?.position ?? 1;
+
+                if (examGroups.length === 0) return (
+                  <div className="card py-12 text-center text-slate-400">
+                    <ClipboardList className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                    <p className="text-sm">No results found for {selectedStudent.full_name} in {selectedYear}</p>
+                  </div>
+                );
+
+                return (
+                  <div className="space-y-4">
+                    {/* Student header */}
+                    <div className="card">
                       <div className="flex items-center justify-between flex-wrap gap-3">
                         <div>
                           <h3 className="text-lg font-bold text-slate-800">{selectedStudent.full_name}</h3>
-                          <p className="text-sm text-slate-500">Class {selectedGrade} — {examLabel}</p>
+                          <p className="text-sm text-slate-500">Class {selectedGrade} — {selectedYear} — {examGroups.length} exam{examGroups.length > 1 ? 's' : ''}</p>
                         </div>
-                        <div className="flex gap-3">
-                          <div className="text-center px-4 py-2 bg-blue-50 rounded-xl">
-                            <p className="text-xs text-slate-400">Position</p>
-                            <p className="text-lg font-bold text-blue-600">{getOrdinal(sData.position)}</p>
-                          </div>
-                          <div className="text-center px-4 py-2 bg-emerald-50 rounded-xl">
-                            <p className="text-xs text-slate-400">Percentage</p>
-                            <p className="text-lg font-bold text-emerald-600">{sData.percentage}%</p>
-                          </div>
-                          {gradeSystem.grade_mode === 'letter' && (
-                            <div className="text-center px-4 py-2 bg-purple-50 rounded-xl">
-                              <p className="text-xs text-slate-400">Grade</p>
-                              <p className="text-lg font-bold text-purple-600">{sData.grade}</p>
-                            </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {sData && (
+                            <>
+                              <div className="text-center px-3 py-1.5 bg-blue-50 rounded-xl">
+                                <p className="text-xs text-slate-400">Position</p>
+                                <p className="text-base font-bold text-blue-600">{getOrdinal(position)}</p>
+                              </div>
+                              <div className="text-center px-3 py-1.5 bg-emerald-50 rounded-xl">
+                                <p className="text-xs text-slate-400">Avg %</p>
+                                <p className="text-base font-bold text-emerald-600">{sData.percentage}%</p>
+                              </div>
+                            </>
                           )}
-                          <div className={`text-center px-4 py-2 rounded-xl ${sData.passFail === 'pass' ? 'bg-emerald-50' : 'bg-red-50'}`}>
-                            <p className="text-xs text-slate-400">Result</p>
-                            <p className={`text-lg font-bold ${sData.passFail === 'pass' ? 'text-emerald-600' : 'text-red-600'}`}>
-                              {sData.passFail === 'pass' ? 'PASS' : 'FAIL'}
-                            </p>
-                          </div>
+                          {/* Print All button */}
+                          {examGroups.length > 1 && (
+                            <button
+                              onClick={() => printAllExams(selectedStudent, examGroups, schoolName, settings?.logo_url ?? null, selectedGrade, gradeSystem)}
+                              className="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-colors">
+                              <Printer className="w-4 h-4" /> Print All Exams
+                            </button>
+                          )}
                         </div>
                       </div>
-
-                      {/* Subject-wise marks */}
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="bg-slate-50 border-b border-slate-100">
-                            <th className="text-left p-3 font-semibold text-slate-600">Subject</th>
-                            <th className="text-center p-3 font-semibold text-slate-600">Obtained</th>
-                            <th className="text-center p-3 font-semibold text-slate-600">Total</th>
-                            <th className="text-center p-3 font-semibold text-slate-600">%</th>
-                            {gradeSystem.grade_mode === 'letter' && <th className="text-center p-3 font-semibold text-slate-600">Grade</th>}
-                            <th className="text-center p-3 font-semibold text-slate-600">Result</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {sData.results.map(r => {
-                            const pct = calcPercentage(r.obtained_marks, r.total_marks);
-                            return (
-                              <tr key={r.id} className="border-b border-slate-50">
-                                <td className="p-3 font-medium text-slate-700">{r.subject_name}</td>
-                                <td className="p-3 text-center font-semibold text-slate-700">{r.obtained_marks}</td>
-                                <td className="p-3 text-center text-slate-500">{r.total_marks}</td>
-                                <td className="p-3 text-center font-semibold">
-                                  <span className={pct >= gradeSystem.passing_percentage ? 'text-emerald-600' : 'text-red-500'}>{pct}%</span>
-                                </td>
-                                {gradeSystem.grade_mode === 'letter' && (
-                                  <td className="p-3 text-center">
-                                    <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-lg text-xs font-bold">{r.grade}</span>
-                                  </td>
-                                )}
-                                <td className="p-3 text-center">
-                                  {r.pass_fail === 'pass'
-                                    ? <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-lg text-xs font-bold">PASS</span>
-                                    : <span className="px-2 py-0.5 bg-red-100 text-red-600 rounded-lg text-xs font-bold">FAIL</span>}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                        <tfoot>
-                          <tr className="bg-slate-50 border-t-2 border-slate-200">
-                            <td className="p-3 font-bold text-slate-700">Total</td>
-                            <td className="p-3 text-center font-bold text-slate-700">{sData.totalObtained}</td>
-                            <td className="p-3 text-center font-bold text-slate-700">{sData.totalMax}</td>
-                            <td className="p-3 text-center font-bold">
-                              <span className={sData.percentage >= gradeSystem.passing_percentage ? 'text-emerald-600' : 'text-red-500'}>{sData.percentage}%</span>
-                            </td>
-                            {gradeSystem.grade_mode === 'letter' && (
-                              <td className="p-3 text-center">
-                                <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded-lg text-sm font-bold">{sData.grade}</span>
-                              </td>
-                            )}
-                            <td className="p-3 text-center">
-                              {sData.passFail === 'pass'
-                                ? <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-lg text-sm font-bold">PASS</span>
-                                : <span className="px-2 py-0.5 bg-red-100 text-red-600 rounded-lg text-sm font-bold">FAIL</span>}
-                            </td>
-                          </tr>
-                        </tfoot>
-                      </table>
-
-                      {/* Print button */}
-                      <button onClick={() => window.print()} className="flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors">
-                        <Printer className="w-4 h-4" /> Print Report Card
-                      </button>
                     </div>
-                  );
-                })()}
-              </div>
+
+                    {/* One card per exam group */}
+                    {examGroups.map(group => (
+                      <div key={`${group.examType}_${group.examMonth}`} className="card space-y-3">
+                        {/* Exam group header */}
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div>
+                            <span className="inline-block bg-blue-900 text-white text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide mb-1">
+                              {group.label}
+                            </span>
+                            <div className="flex items-center gap-3 mt-1">
+                              <span className={`text-sm font-bold ${group.percentage >= gradeSystem.passing_percentage ? 'text-emerald-600' : 'text-red-500'}`}>
+                                {group.totalObtained}/{group.totalMax} ({group.percentage}%)
+                              </span>
+                              {gradeSystem.grade_mode === 'letter' && (
+                                <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded-lg text-xs font-bold">{group.grade}</span>
+                              )}
+                              <span className={`px-2 py-0.5 rounded-lg text-xs font-bold ${group.passFail === 'pass' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>
+                                {group.passFail === 'pass' ? 'PASS' : 'FAIL'}
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => printSingleExamCard(selectedStudent, group, schoolName, settings?.logo_url ?? null, selectedGrade, position, gradeSystem)}
+                            className="flex items-center gap-2 px-3 py-1.5 border border-slate-200 text-slate-600 text-xs font-semibold rounded-xl hover:bg-slate-50 transition-colors">
+                            <Printer className="w-3.5 h-3.5" /> Print This Result
+                          </button>
+                        </div>
+
+                        {/* Subject table */}
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-slate-50 border-b border-slate-100">
+                              <th className="text-left p-3 font-semibold text-slate-600">Subject</th>
+                              <th className="text-center p-3 font-semibold text-slate-600">Obtained</th>
+                              <th className="text-center p-3 font-semibold text-slate-600">Total</th>
+                              <th className="text-center p-3 font-semibold text-slate-600">%</th>
+                              {gradeSystem.grade_mode === 'letter' && <th className="text-center p-3 font-semibold text-slate-600">Grade</th>}
+                              <th className="text-center p-3 font-semibold text-slate-600">Result</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {group.rows.map(r => {
+                              const pct = calcPercentage(r.obtained_marks, r.total_marks);
+                              return (
+                                <tr key={r.id} className="border-b border-slate-50">
+                                  <td className="p-3 font-medium text-slate-700">{r.subject_name}</td>
+                                  <td className="p-3 text-center font-semibold text-slate-700">{r.obtained_marks}</td>
+                                  <td className="p-3 text-center text-slate-500">{r.total_marks}</td>
+                                  <td className="p-3 text-center font-semibold">
+                                    <span className={pct >= gradeSystem.passing_percentage ? 'text-emerald-600' : 'text-red-500'}>{pct}%</span>
+                                  </td>
+                                  {gradeSystem.grade_mode === 'letter' && (
+                                    <td className="p-3 text-center">
+                                      <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-lg text-xs font-bold">{r.grade}</span>
+                                    </td>
+                                  )}
+                                  <td className="p-3 text-center">
+                                    {r.pass_fail === 'pass'
+                                      ? <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-lg text-xs font-bold">PASS</span>
+                                      : <span className="px-2 py-0.5 bg-red-100 text-red-600 rounded-lg text-xs font-bold">FAIL</span>}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                          <tfoot>
+                            <tr className="bg-slate-50 border-t-2 border-slate-200">
+                              <td className="p-3 font-bold text-slate-700">Total</td>
+                              <td className="p-3 text-center font-bold text-slate-700">{group.totalObtained}</td>
+                              <td className="p-3 text-center font-bold text-slate-700">{group.totalMax}</td>
+                              <td className="p-3 text-center font-bold">
+                                <span className={group.percentage >= gradeSystem.passing_percentage ? 'text-emerald-600' : 'text-red-500'}>{group.percentage}%</span>
+                              </td>
+                              {gradeSystem.grade_mode === 'letter' && (
+                                <td className="p-3 text-center">
+                                  <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded-lg text-sm font-bold">{group.grade}</span>
+                                </td>
+                              )}
+                              <td className="p-3 text-center">
+                                {group.passFail === 'pass'
+                                  ? <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-lg text-sm font-bold">PASS</span>
+                                  : <span className="px-2 py-0.5 bg-red-100 text-red-600 rounded-lg text-sm font-bold">FAIL</span>}
+                              </td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    ))}
+
+                    {/* Print all at bottom too if multiple exams */}
+                    {examGroups.length > 1 && (
+                      <button
+                        onClick={() => printAllExams(selectedStudent, examGroups, schoolName, settings?.logo_url ?? null, selectedGrade, gradeSystem)}
+                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-colors w-fit">
+                        <Printer className="w-4 h-4" /> Print Full Year Report Card
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           ) : (
             // ── Class Marksheet View ──
@@ -668,9 +1110,9 @@ export default function Results() {
                     <h3 className="font-semibold text-slate-800">Class {selectedGrade} — {examLabel}</h3>
                     <p className="text-xs text-slate-400 mt-0.5">Click any student to see their full report card</p>
                   </div>
-                  <button onClick={() => window.print()}
+                  <button onClick={() => printClassMarksheet(withPositions, subjects, schoolName, settings?.logo_url ?? null, selectedGrade, examLabel, gradeSystem)}
                     className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-slate-200 text-slate-600 text-xs font-medium hover:bg-slate-50 transition-colors">
-                    <Printer className="w-3.5 h-3.5" /> Print
+                    <Printer className="w-3.5 h-3.5" /> Print Marksheet
                   </button>
                 </div>
                 <table className="w-full text-sm">

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { supabase, Student, FeeRecord, FeeStructure, MONTHS, GRADES, CURRENT_YEAR, DECADE_YEARS, sendSmsNotification } from '../lib/supabase';
 import { useSchool } from '../lib/schoolContext';
-import { Search, CreditCard, CheckCircle, AlertCircle, Clock, X, ChevronDown, Plus, Receipt } from 'lucide-react';
+import { Search, CreditCard, CheckCircle, AlertCircle, Clock, X, ChevronDown, Plus, Receipt, Printer } from 'lucide-react';
+import ReceiptPreview from '../components/ReceiptPreview';
 
 interface StudentFee { student: Student; feeRecord?: FeeRecord; feeStructure?: FeeStructure; }
 
@@ -18,6 +19,8 @@ export default function Fees() {
   const [payForm, setPayForm] = useState<Partial<FeeRecord>>({});
   const [saving, setSaving] = useState(false);
   const [smsStatus, setSmsStatus] = useState('');
+  const [showReceipt, setShowReceipt] = useState(false);
+  const [receiptData, setReceiptData] = useState<any>(null);
 
   async function fetchData() {
     setLoading(true);
@@ -78,6 +81,68 @@ export default function Fees() {
     setSaving(false); setShowPayModal(false); fetchData();
   }
 
+  async function generateReceipt(entry: StudentFee) {
+    // Get school details
+    const { data: schoolSettings } = await supabase
+      .from('school_settings')
+      .select('school_name, address, phone, email, logo_url, principal_name')
+      .eq('school_id', schoolId)
+      .single();
+
+    // Calculate previous balance (unpaid months before current month in the same year)
+    const { data: previousFees } = await supabase
+      .from('fee_records')
+      .select('total_amount, amount_paid, status')
+      .eq('student_id', entry.student.id)
+      .eq('fee_year', selectedYear)
+      .lt('fee_month', selectedMonth);
+
+    let previousBalance = 0;
+    if (previousFees) {
+      for (const fee of previousFees) {
+        if (fee.status !== 'Paid') {
+          previousBalance += (fee.total_amount || 0) - (fee.amount_paid || 0);
+        }
+      }
+    }
+
+    const totalDue = entry.feeStructure
+      ? entry.feeStructure.monthly_tuition + entry.feeStructure.lab_fee + entry.feeStructure.sports_fee + (entry.feeStructure.other_fee || 0)
+      : entry.feeRecord?.total_amount || 0;
+    const amountPaid = entry.feeRecord?.amount_paid || totalDue;
+    const remaining = (totalDue + previousBalance) - amountPaid;
+
+    // Generate receipt number
+    const year = selectedYear.toString().slice(-2);
+    const month = selectedMonth.toString().padStart(2, '0');
+    const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+    const receiptNumber = `RCT-${year}${month}-${random}`;
+
+    setReceiptData({
+      receiptNumber,
+      schoolName: schoolSettings?.school_name || '',
+      schoolLogo: schoolSettings?.logo_url || null,
+      schoolAddress: schoolSettings?.address || '',
+      schoolPhone: schoolSettings?.phone || '',
+      schoolEmail: schoolSettings?.email || '',
+      studentName: entry.student.full_name,
+      rollNumber: entry.student.roll_number || '',
+      className: `${entry.student.current_grade}${entry.student.current_section || ''}`,
+      fatherName: entry.student.father_name || '',
+      feeMonth: selectedMonth,
+      feeYear: selectedYear,
+      totalAmount: totalDue,
+      amountPaid: amountPaid,
+      previousBalance: previousBalance,
+      remainingBalance: remaining < 0 ? 0 : remaining,
+      paymentDate: entry.feeRecord?.payment_date || new Date().toISOString().split('T')[0],
+      paymentMethod: entry.feeRecord?.payment_method || 'Cash',
+      receivedBy: schoolSettings?.principal_name || 'Principal',
+    });
+
+    setShowReceipt(true);
+  }
+
   return (
     <div className="space-y-5 animate-fade-in">
       <div className="flex items-center justify-between"><div><h2 className="text-2xl font-bold text-slate-800">Fee Management</h2><p className="text-slate-500 text-sm">Track and collect student fees</p></div></div>
@@ -99,7 +164,7 @@ export default function Fees() {
         <th className="table-header text-left">Student</th><th className="table-header text-left hidden sm:table-cell">Class</th><th className="table-header text-right">Fee</th><th className="table-header text-right">Paid</th><th className="table-header text-left hidden md:table-cell">Date</th><th className="table-header text-left">Status</th><th className="table-header text-left">Action</th>
       </tr></thead><tbody>
         {loading ? <tr><td colSpan={7} className="table-cell text-center py-12 text-slate-400">Loading...</td></tr> :
-        filtered.length === 0 ? <tr><td colSpan={7} className="table-cell text-center py-12 text-slate-400">No records</td></tr> :
+        filtered.length === 0 ? <tr><td colSpan={7} className="table-cell text-center py-12 text-slate-400">No records</td> </tr> :
         filtered.map(({ student: s, feeRecord: fr, feeStructure: fs }) => {
           const totalDue = fs ? fs.monthly_tuition + fs.lab_fee + fs.sports_fee : 0;
           const isPaid = fr?.status === 'Paid';
@@ -111,7 +176,19 @@ export default function Fees() {
             <td className="table-cell text-right font-semibold"><span className={isPaid ? 'text-emerald-600' : 'text-slate-400'}>Rs. {(fr?.amount_paid || 0).toLocaleString()}</span></td>
             <td className="table-cell hidden md:table-cell text-slate-500 text-sm">{fr?.payment_date ? new Date(fr.payment_date).toLocaleDateString('en-PK') : '—'}</td>
             <td className="table-cell">{isPaid ? <span className="badge badge-green flex items-center gap-1 w-fit"><CheckCircle className="w-3 h-3" />Paid</span> : isPartial ? <span className="badge badge-yellow flex items-center gap-1 w-fit"><Clock className="w-3 h-3" />Partial</span> : <span className="badge badge-red flex items-center gap-1 w-fit"><AlertCircle className="w-3 h-3" />Unpaid</span>}</td>
-            <td className="table-cell"><button onClick={() => openPayModal({ student: s, feeRecord: fr, feeStructure: fs })} className={`text-xs px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 transition-colors ${isPaid ? 'btn-secondary' : 'btn-primary'}`}>{isPaid ? <><Receipt className="w-3.5 h-3.5" />Edit</> : <><Plus className="w-3.5 h-3.5" />Collect</>}</button></td>
+            <td className="table-cell">
+              <div className="flex gap-2">
+                <button onClick={() => openPayModal({ student: s, feeRecord: fr, feeStructure: fs })} className={`text-xs px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 transition-colors ${isPaid ? 'btn-secondary' : 'btn-primary'}`}>
+                  {isPaid ? <><Receipt className="w-3.5 h-3.5" />Edit</> : <><Plus className="w-3.5 h-3.5" />Collect</>}
+                </button>
+                {fr && fr.status === 'Paid' && (
+                  <button onClick={() => generateReceipt({ student: s, feeRecord: fr, feeStructure: fs })} 
+                    className="text-xs px-3 py-1.5 rounded-lg font-medium bg-blue-50 text-blue-600 hover:bg-blue-100 flex items-center gap-1.5 transition-colors">
+                    <Printer className="w-3.5 h-3.5" /> Receipt
+                  </button>
+                )}
+              </div>
+            </td>
           </tr>);
         })}
       </tbody></table></div></div>
@@ -137,6 +214,14 @@ export default function Fees() {
           </div>
           <div className="flex items-center justify-end gap-3 p-5 border-t border-slate-100"><button onClick={() => setShowPayModal(false)} className="btn-secondary">Cancel</button><button onClick={saveFee} disabled={saving} className="btn-success"><CreditCard className="w-4 h-4" />{saving ? 'Saving...' : 'Save & Send SMS'}</button></div>
         </div></div>
+      )}
+
+      {showReceipt && receiptData && (
+        <ReceiptPreview
+          data={receiptData}
+          onClose={() => setShowReceipt(false)}
+          onPrint={() => {}}
+        />
       )}
     </div>
   );

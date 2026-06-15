@@ -6,8 +6,19 @@ import {
   User, CreditCard, CalendarCheck, ClipboardList,
   CheckCircle, AlertCircle, Clock, MinusCircle,
   ChevronDown, Camera, FileText, Upload, Trash2,
-  BookOpen, FileUp, Contact, ScrollText,
+  BookOpen, FileUp, ScrollText, Loader,
 } from 'lucide-react';
+import {
+  CERTIFICATE_DEFINITIONS,
+  CertificateData,
+  CertificateTypeId,
+  generateCertificateNumber,
+  todayString,
+} from './certificate.types';
+import CertificatePreview from './CertificatePreview';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
+import ReceiptPreview from '../components/ReceiptPreview';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -37,6 +48,7 @@ interface FeeRecord {
   amount_paid: number;
   status: string;
   payment_date?: string;
+  payment_method?: string;
 }
 
 interface AttendanceSummary {
@@ -67,7 +79,13 @@ interface StudentDoc {
   uploaded_at: string;
 }
 
-type Tab = 'profile' | 'fees' | 'attendance' | 'results' | 'documents' | 'idcard' | 'certificate';
+type Tab = 'profile' | 'fees' | 'attendance' | 'results' | 'documents' | 'certificate';
+
+// Raw attendance record per day (fetched from DB)
+interface AttendanceRecord {
+  attendance_date: string;
+  status: string;
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -78,9 +96,25 @@ const MONTH_NAMES = [
 const CURRENT_YEAR = new Date().getFullYear();
 const YEAR_OPTIONS = Array.from({ length: 6 }, (_, i) => CURRENT_YEAR - i);
 
-function genCertNumber() {
-  const n = String(Math.floor(Math.random() * 9000) + 1000);
-  return `LC-${CURRENT_YEAR}-${n}`;
+// ── Function to get next roll number from database ───────────────────────────
+async function getNextRollNumber(schoolId: string, grade: number, section: string): Promise<string | null> {
+  if (!schoolId) return null;
+  try {
+    const { data, error } = await supabase
+      .rpc('get_next_roll_number', {
+        p_school_id: schoolId,
+        p_grade: grade,
+        p_section: section
+      });
+    if (error) {
+      console.error('Error getting roll number:', error);
+      return null;
+    }
+    return data;
+  } catch (err) {
+    console.error('Failed to get roll number:', err);
+    return null;
+  }
 }
 
 // ── Badges ────────────────────────────────────────────────────────────────────
@@ -143,418 +177,746 @@ function printHTML(html: string, title = 'Print') {
   setTimeout(() => { win.print(); }, 400);
 }
 
-// ── ID Card Component ─────────────────────────────────────────────────────────
+// ── Print Results — professional result card document ─────────────────────────
 
-function IDCardTab({ student, schoolName, cardYear }: {
-  student: Student; schoolName: string; cardYear: number;
-}) {
-  const academicYear = `${cardYear}-${String(cardYear + 1).slice(-2)}`;
+type ExamGroupEntry = [string, { label: string; rows: Result[]; sortOrder: number }];
 
-  function printCard() {
-    const photoHTML = student.photo_url
-      ? `<img src="${student.photo_url}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;" />`
-      : `<div style="width:100%;height:100%;background:#1d4ed8;border-radius:6px;display:flex;align-items:center;justify-content:center;color:white;font-size:28px;font-weight:700;">${student.full_name.charAt(0).toUpperCase()}</div>`;
+function printResults(groups: ExamGroupEntry[], student: Student, schoolName: string, year: number, schoolLogo: string | null) {
+  const grandObt = groups.reduce((s,[,g])=>s+g.rows.reduce((a,r)=>a+(r.obtained_marks??0),0),0);
+  const grandTot = groups.reduce((s,[,g])=>s+g.rows.reduce((a,r)=>a+(r.total_marks??0),0),0);
+  const grandPct = grandTot>0?Math.round((grandObt/grandTot)*100):0;
+  const allPass  = groups.every(([,g])=>g.rows.every(r=>r.pass_fail==='pass'));
 
-    const html = `
-      <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f1f5f9;">
-        <div style="width:85.6mm;background:white;border-radius:10px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.15);font-family:'Segoe UI',Arial,sans-serif;">
-          <!-- Header -->
-          <div style="background:linear-gradient(135deg,#1d4ed8,#2563eb);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;">
-            <div style="display:flex;align-items:center;gap:8px;">
-              <div style="width:28px;height:28px;background:white;border-radius:6px;display:flex;align-items:center;justify-content:center;">
-                <div style="width:16px;height:16px;background:#1d4ed8;border-radius:3px;"></div>
-              </div>
-              <div>
-                <div style="color:white;font-size:11px;font-weight:700;line-height:1.2;">${schoolName}</div>
-                <div style="color:#bfdbfe;font-size:8px;">STUDENT ID CARD</div>
-              </div>
-            </div>
-            <div style="background:rgba(255,255,255,0.2);border-radius:4px;padding:3px 7px;">
-              <div style="color:white;font-size:8px;font-weight:600;">${academicYear}</div>
-            </div>
-          </div>
-
-          <!-- Body -->
-          <div style="padding:10px 14px;display:flex;gap:12px;align-items:flex-start;">
-            <!-- Photo -->
-            <div style="width:56px;height:68px;flex-shrink:0;border:2px solid #e2e8f0;border-radius:8px;overflow:hidden;">
-              ${photoHTML}
-            </div>
-            <!-- Info -->
-            <div style="flex:1;min-width:0;">
-              <div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px;line-height:1.3;">${student.full_name}</div>
-              <table style="width:100%;border-collapse:collapse;">
-                ${[
-                  ['Father', student.father_name ?? '—'],
-                  ['Class', `${student.current_grade ?? '—'} — ${student.current_section ?? '—'}`],
-                  ['Roll No.', student.roll_number ?? '—'],
-                  ['CNIC/B-Form', student.cnic ?? '—'],
-                ].map(([label, val]) => `
-                  <tr>
-                    <td style="font-size:7.5px;color:#64748b;font-weight:600;padding:1.5px 0;width:52px;">${label}</td>
-                    <td style="font-size:7.5px;color:#1e293b;font-weight:500;padding:1.5px 0;">: ${val}</td>
-                  </tr>`).join('')}
-              </table>
-            </div>
-          </div>
-
-          <!-- Footer -->
-          <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:6px 14px;display:flex;justify-content:space-between;align-items:center;">
-            <div style="font-size:7px;color:#94a3b8;">If found, please return to school</div>
-            <div style="font-size:7px;color:#3b82f6;font-weight:600;">Campus Core</div>
+  const groupsHTML = groups.map(([,{ label, rows }]) => {
+    const totObt = rows.reduce((s,r)=>s+(r.obtained_marks??0),0);
+    const totMrk = rows.reduce((s,r)=>s+(r.total_marks??0),0);
+    const pct    = totMrk>0?Math.round((totObt/totMrk)*100):0;
+    const pass   = rows.every(r=>r.pass_fail==='pass');
+    const rowsHTML = rows.map(r=>{
+      const sp = r.total_marks>0?Math.round((r.obtained_marks/r.total_marks)*100):0;
+      return `
+        <tr style="border-bottom:1px solid #f1f5f9;">
+          <td style="padding:7px 10px;font-size:12px;color:#1e293b;font-weight:500;">${r.subject_name}</td>
+          <td style="padding:7px 10px;font-size:12px;text-align:center;font-weight:700;color:#1e293b;">${r.obtained_marks}</td>
+          <td style="padding:7px 10px;font-size:12px;text-align:center;color:#64748b;">${r.total_marks}</td>
+          <td style="padding:7px 10px;font-size:12px;text-align:center;font-weight:600;color:${sp>=40?'#059669':'#dc2626'};">${sp}%</td>
+          <td style="padding:7px 10px;font-size:12px;text-align:center;font-weight:700;color:#475569;">${r.grade??'—'}</td>
+          <td style="padding:7px 10px;font-size:11px;text-align:center;">
+            <span style="background:${r.pass_fail==='pass'?'#d1fae5':'#fee2e2'};color:${r.pass_fail==='pass'?'#065f46':'#991b1b'};padding:2px 8px;border-radius:20px;font-weight:700;">
+              ${(r.pass_fail??'').toUpperCase()}
+            </span>
+          </td>
+        </tr>`;
+    }).join('');
+    return `
+      <div style="margin-bottom:18px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;page-break-inside:avoid;">
+        <div style="background:#f8fafc;border-bottom:1px solid #e2e8f0;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:13px;font-weight:700;color:#1e293b;">${label}</span>
+          <div style="display:flex;align-items:center;gap:12px;">
+            <span style="font-size:12px;color:#64748b;">${totObt} / ${totMrk} &nbsp;(${pct}%)</span>
+            <span style="background:${pass?'#d1fae5':'#fee2e2'};color:${pass?'#065f46':'#991b1b'};font-size:11px;font-weight:700;padding:2px 10px;border-radius:20px;">${pass?'PASS':'FAIL'}</span>
           </div>
         </div>
-      </div>
-      <style>@media print { @page { size: 85.6mm 54mm; margin: 0; } }</style>
-    `;
-    printHTML(html, 'Student ID Card');
-  }
-
-  function printSheet() {
-    // A4 with 4 cards (2×2 grid)
-    const photoHTML = student.photo_url
-      ? `<img src="${student.photo_url}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;" />`
-      : `<div style="width:100%;height:100%;background:#1d4ed8;border-radius:6px;display:flex;align-items:center;justify-content:center;color:white;font-size:28px;font-weight:700;">${student.full_name.charAt(0).toUpperCase()}</div>`;
-
-    const singleCard = `
-      <div style="width:85.6mm;background:white;border-radius:10px;overflow:hidden;border:1px solid #e2e8f0;font-family:'Segoe UI',Arial,sans-serif;page-break-inside:avoid;">
-        <div style="background:linear-gradient(135deg,#1d4ed8,#2563eb);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;">
-          <div style="display:flex;align-items:center;gap:8px;">
-            <div style="width:28px;height:28px;background:white;border-radius:6px;display:flex;align-items:center;justify-content:center;">
-              <div style="width:16px;height:16px;background:#1d4ed8;border-radius:3px;"></div>
-            </div>
-            <div>
-              <div style="color:white;font-size:11px;font-weight:700;line-height:1.2;">${schoolName}</div>
-              <div style="color:#bfdbfe;font-size:8px;">STUDENT ID CARD</div>
-            </div>
-          </div>
-          <div style="background:rgba(255,255,255,0.2);border-radius:4px;padding:3px 7px;">
-            <div style="color:white;font-size:8px;font-weight:600;">${academicYear}</div>
-          </div>
-        </div>
-        <div style="padding:10px 14px;display:flex;gap:12px;align-items:flex-start;">
-          <div style="width:56px;height:68px;flex-shrink:0;border:2px solid #e2e8f0;border-radius:8px;overflow:hidden;">${photoHTML}</div>
-          <div style="flex:1;min-width:0;">
-            <div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px;line-height:1.3;">${student.full_name}</div>
-            <table style="width:100%;border-collapse:collapse;">
-              ${[
-                ['Father', student.father_name ?? '—'],
-                ['Class', `${student.current_grade ?? '—'} — ${student.current_section ?? '—'}`],
-                ['Roll No.', student.roll_number ?? '—'],
-                ['CNIC/B-Form', student.cnic ?? '—'],
-              ].map(([l, v]) => `<tr><td style="font-size:7.5px;color:#64748b;font-weight:600;padding:1.5px 0;width:52px;">${l}</td><td style="font-size:7.5px;color:#1e293b;font-weight:500;padding:1.5px 0;">: ${v}</td></tr>`).join('')}
-            </table>
-          </div>
-        </div>
-        <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:6px 14px;display:flex;justify-content:space-between;align-items:center;">
-          <div style="font-size:7px;color:#94a3b8;">If found, please return to school</div>
-          <div style="font-size:7px;color:#3b82f6;font-weight:600;">Campus Core</div>
-        </div>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead>
+            <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+              ${['Subject','Obtained','Total','%','Grade','Result'].map(h=>`<th style="padding:7px 10px;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;${h==='Subject'?'text-align:left':'text-align:center'}">${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>${rowsHTML}</tbody>
+          <tfoot>
+            <tr style="background:#f1f5f9;border-top:2px solid #e2e8f0;">
+              <td style="padding:7px 10px;font-size:11px;font-weight:700;color:#475569;text-transform:uppercase;">Total</td>
+              <td style="padding:7px 10px;text-align:center;font-weight:700;font-size:13px;color:#1e293b;">${totObt}</td>
+              <td style="padding:7px 10px;text-align:center;font-weight:700;font-size:13px;color:#1e293b;">${totMrk}</td>
+              <td style="padding:7px 10px;text-align:center;font-weight:700;color:${pct>=40?'#059669':'#dc2626'};">${pct}%</td>
+              <td></td>
+              <td style="padding:7px 10px;text-align:center;">
+                <span style="background:${pass?'#d1fae5':'#fee2e2'};color:${pass?'#065f46':'#991b1b'};font-size:11px;font-weight:700;padding:2px 10px;border-radius:20px;">${pass?'PASS':'FAIL'}</span>
+              </td>
+            </tr>
+          </tfoot>
+        </table>
       </div>`;
+  }).join('');
 
-    const html = `
-      <div style="padding:10mm;background:#f8fafc;min-height:297mm;">
-        <div style="display:grid;grid-template-columns:repeat(2,85.6mm);gap:8mm;justify-content:center;">
-          ${singleCard}${singleCard}${singleCard}${singleCard}
+  const logoHtml = schoolLogo 
+    ? `<img src="${schoolLogo}" style="width:44px;height:44px;border-radius:50%;object-fit:cover;margin-bottom:5px;" />`
+    : `<div style="width:44px;height:44px;background:#1d4ed8;border-radius:10px;margin-bottom:5px;display:flex;align-items:center;justify-content:center;"><div style="width:24px;height:24px;background:white;border-radius:5px;"></div></div>`;
+
+  const html = `
+    <div style="padding:16mm 18mm;min-height:297mm;font-family:'Segoe UI',Arial,sans-serif;background:white;position:relative;">
+
+      <!-- Outer border -->
+      <div style="position:absolute;inset:8mm;border:2px solid #1d4ed8;border-radius:6px;pointer-events:none;"></div>
+      <div style="position:absolute;inset:10.5mm;border:1px solid #bfdbfe;border-radius:4px;pointer-events:none;"></div>
+
+      <!-- School header with logo -->
+      <div style="text-align:center;padding-bottom:10px;margin-bottom:10px;border-bottom:2px solid #1d4ed8;">
+        ${logoHtml}
+        <h1 style="font-size:20px;font-weight:800;color:#0f172a;margin:3px 0 2px;">${schoolName}</h1>
+        <p style="font-size:10px;color:#64748b;letter-spacing:2px;text-transform:uppercase;">Academic Result Card — ${year}</p>
+      </div>
+
+      <!-- Student info row -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;">
+        ${[
+          ['Student Name', student.full_name],
+          ["Father's Name", student.father_name??'—'],
+          ['Roll No.', student.roll_number??'—'],
+          ['Class', student.current_grade?`Class ${student.current_grade}${student.current_section?`-${student.current_section}`:''}` :'—'],
+          ['Academic Year', String(year)],
+          ['Overall Result', `${grandObt}/${grandTot} (${grandPct}%)`],
+        ].map(([l,v])=>`
+          <div>
+            <p style="font-size:9px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px;">${l}</p>
+            <p style="font-size:12px;font-weight:600;color:#1e293b;">${v}</p>
+          </div>`).join('')}
+      </div>
+
+      <!-- Exam groups -->
+      ${groupsHTML}
+
+      <!-- Grand total -->
+      <div style="background:#1d4ed8;border-radius:8px;padding:10px 16px;display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+        <span style="font-size:13px;font-weight:700;color:white;">Grand Total</span>
+        <div style="display:flex;align-items:center;gap:16px;">
+          <span style="font-size:13px;color:#bfdbfe;">${grandObt} / ${grandTot}</span>
+          <span style="font-size:15px;font-weight:800;color:white;">${grandPct}%</span>
+          <span style="background:${allPass?'#d1fae5':'#fee2e2'};color:${allPass?'#065f46':'#991b1b'};font-size:12px;font-weight:800;padding:3px 14px;border-radius:20px;">${allPass?'PASS':'FAIL'}</span>
         </div>
       </div>
-      <style>@media print { @page { size: A4; margin: 10mm; } }</style>
+
+      <!-- Signature row -->
+      <div style="display:flex;justify-content:space-between;margin-top:20mm;padding-top:4px;">
+        <div style="text-align:center;min-width:140px;">
+          <div style="height:36px;border-bottom:1.5px solid #334155;margin-bottom:4px;"></div>
+          <p style="font-size:10px;font-weight:700;color:#334155;">Class Teacher</p>
+        </div>
+        <div style="text-align:center;min-width:140px;">
+          <div style="height:36px;border-bottom:1.5px solid #334155;margin-bottom:4px;"></div>
+          <p style="font-size:10px;font-weight:700;color:#334155;">Principal</p>
+          <p style="font-size:9px;color:#64748b;margin-top:1px;">${schoolName}</p>
+        </div>
+      </div>
+
+      <!-- Issue date -->
+      <p style="position:absolute;bottom:12mm;left:50%;transform:translateX(-50%);font-size:9px;color:#94a3b8;text-align:center;">
+        Issued on ${new Date().toLocaleDateString('en-PK',{day:'2-digit',month:'long',year:'numeric'})} &nbsp;·&nbsp; Generated via Campus Core
+      </p>
+    </div>
+    <style>@media print { @page { size: A4; margin: 0; } }</style>
+  `;
+  printHTML(html, `Result Card — ${student.full_name}`);
+}
+
+// ── Print Attendance History ─────────────────────────────────────────────────
+
+function printAttendanceHistory(student: Student, attendance: AttendanceSummary[], rawAttendance: AttendanceRecord[], weeklyOffDays: number[], schoolName: string, schoolLogo: string | null, year: number) {
+  const attTotals = attendance.reduce((a,r)=>({ present:a.present+r.present, absent:a.absent+r.absent, late:a.late+r.late, leave:a.leave+r.leave }),{present:0,absent:0,late:0,leave:0});
+  const attTotal = attTotals.present+attTotals.absent+attTotals.late+attTotals.leave;
+  const attPct = attTotal>0 ? Math.round((attTotals.present/attTotal)*100) : 0;
+
+  // Build monthly calendars HTML
+  const calendarsHTML = attendance.map(a => {
+    const [yr, mo] = a.month.split('-').map(Number);
+    const dayMap: Record<string, string> = {};
+    rawAttendance.forEach(r => { dayMap[r.attendance_date] = r.status; });
+    const daysInMonth = new Date(yr, mo, 0).getDate();
+    const firstWeekday = new Date(yr, mo-1, 1).getDay();
+
+    const daysHTML = [];
+    for (let i = 0; i < firstWeekday; i++) {
+      daysHTML.push('<div></div>');
+    }
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateStr = `${yr}-${String(mo).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+      const dow = new Date(yr, mo-1, day).getDay();
+      let statusClass = '';
+      if (dayMap[dateStr]) {
+        const s = dayMap[dateStr];
+        if (s === 'present') statusClass = 'present';
+        else if (s === 'absent') statusClass = 'absent';
+        else if (s === 'late') statusClass = 'late';
+        else if (s === 'leave') statusClass = 'leave';
+      } else if (weeklyOffDays.includes(dow)) {
+        statusClass = 'off';
+      }
+      daysHTML.push(`<div class="day-cell ${statusClass}">${day}</div>`);
+    }
+    const total = a.present + a.absent + a.late + a.leave;
+    const pct = total > 0 ? Math.round((a.present / total) * 100) : 0;
+
+    return `
+      <div class="month-card">
+        <div class="month-header">
+          <span class="month-name">${MONTH_NAMES[mo-1]} ${yr}</span>
+          <div class="month-stats">
+            <span class="stat-present">P:${a.present}</span>
+            <span class="stat-absent">A:${a.absent}</span>
+            <span class="stat-late">L:${a.late}</span>
+            <span class="stat-leave">Lv:${a.leave}</span>
+            <span class="stat-percent ${pct>=75?'good':'bad'}">${pct}%</span>
+          </div>
+        </div>
+        <div class="weekdays">
+          ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => `<div>${d}</div>`).join('')}
+        </div>
+        <div class="days-grid">${daysHTML.join('')}</div>
+      </div>
     `;
-    printHTML(html, 'ID Cards Sheet');
+  }).join('');
+
+  const logoHtml = schoolLogo 
+    ? `<img src="${schoolLogo}" class="school-logo" />`
+    : `<div class="school-logo-placeholder"></div>`;
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Attendance Record — ${student.full_name}</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: white; padding: 20px; }
+        @media print { body { padding: 0; } @page { size: A4; margin: 10mm; } .no-print { display: none; } }
+        
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { text-align: center; border-bottom: 2px solid #1d4ed8; padding-bottom: 15px; margin-bottom: 20px; }
+        .school-logo { width: 60px; height: 60px; border-radius: 50%; object-fit: cover; margin-bottom: 8px; }
+        .school-logo-placeholder { width: 60px; height: 60px; background: #1d4ed8; border-radius: 50%; margin: 0 auto 8px; }
+        .school-name { font-size: 20px; font-weight: 800; color: #0f172a; }
+        .student-info { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; background: #f8fafc; border-radius: 12px; padding: 12px 16px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
+        .info-label { font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
+        .info-value { font-size: 13px; font-weight: 600; color: #1e293b; margin-top: 2px; }
+        .summary-bar { display: flex; justify-content: space-between; align-items: center; background: ${attPct>=75?'#d1fae5':'#fee2e2'}; border-radius: 12px; padding: 12px 20px; margin-bottom: 20px; }
+        .summary-stats { display: flex; gap: 24px; }
+        .stat-item { text-align: center; }
+        .stat-number { font-size: 20px; font-weight: 700; }
+        .stat-label { font-size: 11px; color: #64748b; }
+        .overall-percent { font-size: 28px; font-weight: 700; color: ${attPct>=75?'#059669':'#dc2626'}; }
+        .legend { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid #e2e8f0; }
+        .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+        .legend-color { width: 12px; height: 12px; border-radius: 3px; }
+        .month-card { border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; margin-bottom: 20px; break-inside: avoid; }
+        .month-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; }
+        .month-name { font-weight: 700; font-size: 14px; color: #1e293b; }
+        .month-stats { display: flex; gap: 12px; font-size: 11px; }
+        .stat-present { color: #059669; font-weight: 600; }
+        .stat-absent { color: #dc2626; font-weight: 600; }
+        .stat-late { color: #d97706; font-weight: 600; }
+        .stat-leave { color: #3b82f6; font-weight: 600; }
+        .stat-percent { font-weight: 700; padding: 2px 8px; border-radius: 20px; }
+        .stat-percent.good { background: #d1fae5; color: #059669; }
+        .stat-percent.bad { background: #fee2e2; color: #dc2626; }
+        .weekdays { display: grid; grid-template-columns: repeat(7, 1fr); background: #f1f5f9; border-bottom: 1px solid #e2e8f0; }
+        .weekdays div { text-align: center; padding: 6px; font-size: 10px; font-weight: 600; color: #64748b; }
+        .days-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; padding: 8px; background: #f8fafc; }
+        .day-cell { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 500; border-radius: 8px; background: white; border: 1px solid #e2e8f0; }
+        .day-cell.present { background: #059669; color: white; border: none; }
+        .day-cell.absent { background: #dc2626; color: white; border: none; }
+        .day-cell.late { background: #d97706; color: white; border: none; }
+        .day-cell.leave { background: #3b82f6; color: white; border: none; }
+        .day-cell.off { background: #e2e8f0; color: #94a3b8; border: none; }
+        .footer { text-align: center; font-size: 9px; color: #94a3b8; margin-top: 20px; padding-top: 12px; border-top: 1px solid #e2e8f0; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          ${logoHtml}
+          <div class="school-name">${schoolName}</div>
+          <div style="font-size: 10px; color: #64748b; letter-spacing: 2px;">ATTENDANCE RECORD — ${year}</div>
+        </div>
+        <div class="student-info">
+          ${[
+            ['Student Name', student.full_name],
+            ["Father's Name", student.father_name??'—'],
+            ['Roll No.', student.roll_number??'—'],
+            ['Class', student.current_grade?`Class ${student.current_grade}${student.current_section?`-${student.current_section}`:''}` :'—'],
+          ].map(([l,v])=>`<div><div class="info-label">${l}</div><div class="info-value">${v}</div></div>`).join('')}
+        </div>
+        <div class="summary-bar">
+          <div class="summary-stats">
+            <div class="stat-item"><div class="stat-number" style="color:#059669;">${attTotals.present}</div><div class="stat-label">Present</div></div>
+            <div class="stat-item"><div class="stat-number" style="color:#dc2626;">${attTotals.absent}</div><div class="stat-label">Absent</div></div>
+            <div class="stat-item"><div class="stat-number" style="color:#d97706;">${attTotals.late}</div><div class="stat-label">Late</div></div>
+            <div class="stat-item"><div class="stat-number" style="color:#3b82f6;">${attTotals.leave}</div><div class="stat-label">Leave</div></div>
+          </div>
+          <div class="overall-percent">${attPct}%</div>
+        </div>
+        <div class="legend">
+          <div class="legend-item"><div class="legend-color" style="background:#059669;"></div><span>Present</span></div>
+          <div class="legend-item"><div class="legend-color" style="background:#dc2626;"></div><span>Absent</span></div>
+          <div class="legend-item"><div class="legend-color" style="background:#d97706;"></div><span>Late</span></div>
+          <div class="legend-item"><div class="legend-color" style="background:#3b82f6;"></div><span>Leave</span></div>
+          <div class="legend-item"><div class="legend-color" style="background:#e2e8f0;"></div><span>Weekly Off</span></div>
+          <div class="legend-item"><div class="legend-color" style="background:white;border:1px solid #e2e8f0;"></div><span>No Record</span></div>
+        </div>
+        ${calendarsHTML}
+        <div class="footer">Generated on ${new Date().toLocaleDateString('en-PK')} · Campus Core</div>
+      </div>
+    </body>
+    </html>
+  `;
+  printHTML(html, `Attendance Record — ${student.full_name}`);
+}
+
+// ── Print Fee History ────────────────────────────────────────────────────────
+
+function printFeeHistory(student: Student, fees: FeeRecord[], schoolName: string, schoolLogo: string | null, year: number) {
+  const totalPaid = fees.filter(f=>f.status==='Paid').reduce((s,f)=>s+(f.amount_paid??0),0);
+  const totalPending = fees.filter(f=>f.status!=='Paid').reduce((s,f)=>s+((f.total_amount||0)-(f.amount_paid||0)),0);
+  
+  const rowsHTML = fees.map(f => `
+    <tr>
+      <td>${MONTH_NAMES[f.fee_month-1]} ${f.fee_year}</td>
+      <td>Rs ${(f.total_amount??0).toLocaleString()}</td>
+      <td>Rs ${(f.amount_paid??0).toLocaleString()}</td>
+      <td>Rs ${((f.total_amount||0)-(f.amount_paid||0)).toLocaleString()}</td>
+      <td><span class="status-badge ${f.status.toLowerCase()}">${f.status}</span></td>
+      <td>${f.payment_date ? new Date(f.payment_date).toLocaleDateString('en-PK') : '—'}</td>
+    </tr>
+  `).join('');
+
+  const logoHtml = schoolLogo 
+    ? `<img src="${schoolLogo}" class="school-logo" />`
+    : `<div class="school-logo-placeholder"></div>`;
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Fee History — ${student.full_name}</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: white; padding: 20px; }
+        @media print { body { padding: 0; } @page { size: A4; margin: 10mm; } }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .header { text-align: center; border-bottom: 2px solid #1d4ed8; padding-bottom: 15px; margin-bottom: 20px; }
+        .school-logo { width: 60px; height: 60px; border-radius: 50%; object-fit: cover; margin-bottom: 8px; }
+        .school-logo-placeholder { width: 60px; height: 60px; background: #1d4ed8; border-radius: 50%; margin: 0 auto 8px; }
+        .school-name { font-size: 20px; font-weight: 800; color: #0f172a; }
+        .student-info { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; background: #f8fafc; border-radius: 12px; padding: 12px 16px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
+        .info-label { font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
+        .info-value { font-size: 13px; font-weight: 600; color: #1e293b; margin-top: 2px; }
+        .summary-cards { display: flex; gap: 16px; margin-bottom: 20px; }
+        .summary-card { flex: 1; background: #f8fafc; border-radius: 12px; padding: 12px; text-align: center; border: 1px solid #e2e8f0; }
+        .summary-label { font-size: 11px; color: #64748b; }
+        .summary-value { font-size: 22px; font-weight: 700; color: #0f172a; margin-top: 4px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f8fafc; font-weight: 700; color: #475569; }
+        td:last-child, th:last-child { text-align: center; }
+        .status-badge { padding: 3px 10px; border-radius: 20px; font-size: 10px; font-weight: 600; }
+        .status-badge.paid { background: #d1fae5; color: #059669; }
+        .status-badge.partial { background: #fed7aa; color: #c2410c; }
+        .status-badge.unpaid { background: #fee2e2; color: #dc2626; }
+        .footer { text-align: center; font-size: 9px; color: #94a3b8; margin-top: 20px; padding-top: 12px; border-top: 1px solid #e2e8f0; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          ${logoHtml}
+          <div class="school-name">${schoolName}</div>
+          <div style="font-size: 10px; color: #64748b; letter-spacing: 2px;">FEE HISTORY — ${year}</div>
+        </div>
+        <div class="student-info">
+          ${[
+            ['Student Name', student.full_name],
+            ["Father's Name", student.father_name??'—'],
+            ['Roll No.', student.roll_number??'—'],
+            ['Class', student.current_grade?`Class ${student.current_grade}${student.current_section?`-${student.current_section}`:''}` :'—'],
+          ].map(([l,v])=>`<div><div class="info-label">${l}</div><div class="info-value">${v}</div></div>`).join('')}
+        </div>
+        <div class="summary-cards">
+          <div class="summary-card"><div class="summary-label">Total Paid</div><div class="summary-value" style="color:#059669;">Rs ${totalPaid.toLocaleString()}</div></div>
+          <div class="summary-card"><div class="summary-label">Total Pending</div><div class="summary-value" style="color:#dc2626;">Rs ${totalPending.toLocaleString()}</div></div>
+          <div class="summary-card"><div class="summary-label">Total Fees</div><div class="summary-value">Rs ${(totalPaid+totalPending).toLocaleString()}</div></div>
+        </div>
+        <table>
+          <thead><tr><th>Month/Year</th><th>Total</th><th>Paid</th><th>Pending</th><th>Status</th><th>Payment Date</th></tr></thead>
+          <tbody>${rowsHTML}</tbody>
+        </table>
+        <div class="footer">Generated on ${new Date().toLocaleDateString('en-PK')} · Campus Core</div>
+      </div>
+    </body>
+    </html>
+  `;
+  printHTML(html, `Fee History — ${student.full_name}`);
+}
+
+// ── Print Full Student Record ────────────────────────────────────────────────
+
+function printFullRecord(student: Student, fees: FeeRecord[], attendance: AttendanceSummary[], rawAttendance: AttendanceRecord[], weeklyOffDays: number[], examResults: Result[], schoolName: string, schoolLogo: string | null, year: number) {
+  // Fee totals
+  const totalPaid = fees.filter(f=>f.status==='Paid').reduce((s,f)=>s+(f.amount_paid??0),0);
+  const totalPending = fees.filter(f=>f.status!=='Paid').reduce((s,f)=>s+((f.total_amount||0)-(f.amount_paid||0)),0);
+  
+  // Fee table HTML
+  const feeRowsHTML = fees.map(f => `
+    <tr><td>${MONTH_NAMES[f.fee_month-1]} ${f.fee_year}</td><td>Rs ${(f.total_amount??0).toLocaleString()}</td><td>Rs ${(f.amount_paid??0).toLocaleString()}</td><td>Rs ${((f.total_amount||0)-(f.amount_paid||0)).toLocaleString()}</td><td class="status-${f.status.toLowerCase()}">${f.status}</td><td>${f.payment_date ? new Date(f.payment_date).toLocaleDateString('en-PK') : '—'}</td></tr>
+  `).join('');
+
+  // Attendance totals
+  const attTotals = attendance.reduce((a,r)=>({ present:a.present+r.present, absent:a.absent+r.absent, late:a.late+r.late, leave:a.leave+r.leave }),{present:0,absent:0,late:0,leave:0});
+  const attTotal = attTotals.present+attTotals.absent+attTotals.late+attTotals.leave;
+  const attPct = attTotal>0 ? Math.round((attTotals.present/attTotal)*100) : 0;
+
+  // Results groups
+  const examMap: Record<string, { label: string; rows: Result[]; sortOrder: number }> = {};
+  examResults.forEach(r => {
+    const key = r.exam_type === 'monthly' ? `monthly-${r.exam_month??0}` : r.exam_type;
+    if (!examMap[key]) {
+      let label = '', sortOrder = 0;
+      if (key.startsWith('monthly-')) { const m=Number(key.split('-')[1]); label=`Monthly — ${MONTH_NAMES[m-1]??''}`; sortOrder=m; }
+      else if (key==='midterm') { label='Midterm Exam'; sortOrder=50; }
+      else if (key==='annual') { label='Annual Exam'; sortOrder=99; }
+      else { label=r.exam_type; sortOrder=60; }
+      examMap[key] = { label, rows:[], sortOrder };
+    }
+    examMap[key].rows.push(r);
+  });
+  const examGroups = Object.entries(examMap).sort(([,a],[,b])=>a.sortOrder-b.sortOrder);
+  
+  const resultsHTML = examGroups.map(([,{ label, rows }]) => {
+    const totObt = rows.reduce((s,r)=>s+(r.obtained_marks??0),0);
+    const totMrk = rows.reduce((s,r)=>s+(r.total_marks??0),0);
+    const pct = totMrk>0?Math.round((totObt/totMrk)*100):0;
+    const pass = rows.every(r=>r.pass_fail==='pass');
+    const subjectRows = rows.map(r => {
+      const sp = r.total_marks>0?Math.round((r.obtained_marks/r.total_marks)*100):0;
+      return `<tr><td>${r.subject_name}</td><td>${r.obtained_marks}</td><td>${r.total_marks}</td><td>${sp}%</td><td>${r.grade??'—'}</td><td class="result-${r.pass_fail}">${r.pass_fail?.toUpperCase()}</td></tr>`;
+    }).join('');
+    return `
+      <div class="exam-group">
+        <div class="exam-header">
+          <span>${label}</span>
+          <div class="exam-stats">${totObt}/${totMrk} (${pct}%) <span class="result-badge ${pass?'pass':'fail'}">${pass?'PASS':'FAIL'}</span></div>
+        </div>
+        <table class="results-table"><thead><tr><th>Subject</th><th>Obtained</th><th>Total</th><th>%</th><th>Grade</th><th>Result</th></tr></thead><tbody>${subjectRows}</tbody>
+        <tfoot><tr><td colspan="2"><strong>Total</strong></td><td><strong>${totMrk}</strong></td><td colspan="3"><strong>${pct}% ${pass?'PASS':'FAIL'}</strong></td></tr></tfoot></table>
+      </div>
+    `;
+  }).join('');
+
+  const logoHtml = schoolLogo 
+    ? `<img src="${schoolLogo}" class="school-logo" />`
+    : `<div class="school-logo-placeholder"></div>`;
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Full Record — ${student.full_name}</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: white; padding: 20px; }
+        @media print { body { padding: 0; } @page { size: A4; margin: 10mm; } }
+        .container { max-width: 1100px; margin: 0 auto; }
+        .section { margin-bottom: 25px; page-break-inside: avoid; }
+        .section-title { font-size: 16px; font-weight: 700; color: #1d4ed8; border-bottom: 2px solid #1d4ed8; padding-bottom: 6px; margin-bottom: 15px; }
+        .header { text-align: center; border-bottom: 2px solid #1d4ed8; padding-bottom: 15px; margin-bottom: 20px; }
+        .school-logo { width: 60px; height: 60px; border-radius: 50%; object-fit: cover; margin-bottom: 8px; }
+        .school-logo-placeholder { width: 60px; height: 60px; background: #1d4ed8; border-radius: 50%; margin: 0 auto 8px; }
+        .school-name { font-size: 20px; font-weight: 800; color: #0f172a; }
+        .student-info { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; background: #f8fafc; border-radius: 12px; padding: 12px 16px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
+        .info-label { font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
+        .info-value { font-size: 13px; font-weight: 600; color: #1e293b; margin-top: 2px; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 10px; }
+        th, td { padding: 8px 6px; text-align: left; border: 1px solid #e2e8f0; }
+        th { background: #f8fafc; font-weight: 700; color: #475569; }
+        td:last-child, th:last-child { text-align: center; }
+        .status-paid { color: #059669; font-weight: 600; }
+        .status-partial { color: #c2410c; font-weight: 600; }
+        .status-unpaid { color: #dc2626; font-weight: 600; }
+        .result-pass { color: #059669; font-weight: 600; }
+        .result-fail { color: #dc2626; font-weight: 600; }
+        .exam-group { border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
+        .exam-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-weight: 700; }
+        .exam-stats { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+        .result-badge { padding: 2px 8px; border-radius: 20px; font-size: 10px; }
+        .result-badge.pass { background: #d1fae5; color: #059669; }
+        .result-badge.fail { background: #fee2e2; color: #dc2626; }
+        .results-table { margin-bottom: 0; }
+        .footer { text-align: center; font-size: 9px; color: #94a3b8; margin-top: 20px; padding-top: 12px; border-top: 1px solid #e2e8f0; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          ${logoHtml}
+          <div class="school-name">${schoolName}</div>
+          <div style="font-size: 10px; color: #64748b; letter-spacing: 2px;">FULL STUDENT RECORD — ${year}</div>
+        </div>
+        
+        <div class="student-info">
+          ${[
+            ['Student Name', student.full_name],
+            ["Father's Name", student.father_name??'—'],
+            ['Roll No.', student.roll_number??'—'],
+            ['Class', student.current_grade?`Class ${student.current_grade}${student.current_section?`-${student.current_section}`:''}` :'—'],
+            ['Date of Birth', student.date_of_birth||'—'],
+            ['Admission Date', student.admission_date||'—'],
+            ['Status', student.status||'Active'],
+            ['Phone', student.phone||'—'],
+          ].map(([l,v])=>`<div><div class="info-label">${l}</div><div class="info-value">${v}</div></div>`).join('')}
+        </div>
+
+        <div class="section">
+          <div class="section-title">Fee History</div>
+          <div style="display: flex; gap: 12px; margin-bottom: 12px;">
+            <div style="background:#d1fae5; padding:8px 12px; border-radius:8px;"><span style="font-size:11px;">Total Paid</span><br/><strong style="color:#059669;">Rs ${totalPaid.toLocaleString()}</strong></div>
+            <div style="background:#fee2e2; padding:8px 12px; border-radius:8px;"><span style="font-size:11px;">Pending</span><br/><strong style="color:#dc2626;">Rs ${totalPending.toLocaleString()}</strong></div>
+          </div>
+          <table>
+            <thead><tr><th>Month/Year</th><th>Total</th><th>Paid</th><th>Pending</th><th>Status</th><th>Date</th></tr></thead>
+            <tbody>${feeRowsHTML || '<tr><td colspan="6">No fee records</td></tr>'}</tbody>
+          </table>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Attendance Summary</div>
+          <div style="display: flex; gap: 16px; margin-bottom: 12px;">
+            <div><strong style="color:#059669;">Present:</strong> ${attTotals.present}</div>
+            <div><strong style="color:#dc2626;">Absent:</strong> ${attTotals.absent}</div>
+            <div><strong style="color:#d97706;">Late:</strong> ${attTotals.late}</div>
+            <div><strong style="color:#3b82f6;">Leave:</strong> ${attTotals.leave}</div>
+            <div><strong>Overall:</strong> ${attPct}%</div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Exam Results</div>
+          ${resultsHTML || '<p>No results found</p>'}
+        </div>
+
+        <div class="footer">Generated on ${new Date().toLocaleDateString('en-PK')} · Campus Core</div>
+      </div>
+    </body>
+    </html>
+  `;
+  printHTML(html, `Full Record — ${student.full_name}`);
+}
+
+// ── Certificate Tab — full 11-type generator with auto-fill ───────────────────
+
+// Fields always auto-filled from student record — never shown in manual form
+const AUTO_FILL_KEYS = new Set([
+  'student_name', 'father_name', 'roll_number', 'class', 'date_of_birth',
+]);
+
+function buildAutoFill(student: Student, typeId: CertificateTypeId): CertificateData {
+  const classLabel = student.current_grade
+    ? `Class ${student.current_grade}${student.current_section ? `-${student.current_section}` : ''}`
+    : '';
+  return {
+    student_name:       student.full_name ?? '',
+    father_name:        student.father_name ?? '',
+    roll_number:        student.roll_number ?? '',
+    class:              classLabel,
+    date_of_birth:      student.date_of_birth ?? '',
+    issue_date:         todayString(),
+    certificate_number: generateCertificateNumber(typeId),
+  };
+}
+
+function CertificateTab({ student, schoolName }: { student: Student; schoolName: string }) {
+  const { settings } = useSchool();
+
+  const schoolSettings = {
+    school_name:    (settings as any)?.school_name ?? schoolName,
+    principal_name: (settings as any)?.principal_name ?? '',
+    logo_url:       (settings as any)?.logo_url ?? null,
+  };
+
+  const [step, setStep]               = useState<1 | 2 | 3>(1);
+  const [selectedType, setSelectedType] = useState<CertificateTypeId | null>(null);
+  const [formData, setFormData]       = useState<CertificateData>({});
+  const [pdfLoading, setPdfLoading]   = useState(false);
+  const [pdfDone, setPdfDone]         = useState(false);
+  const certRef = useRef<HTMLDivElement>(null);
+
+  function handleSelectType(id: CertificateTypeId) {
+    setSelectedType(id);
+    const def = CERTIFICATE_DEFINITIONS.find((d: { id: CertificateTypeId }) => d.id === id)!;
+    const auto = buildAutoFill(student, id);
+    const initial: CertificateData = {};
+    def.fields.forEach((f: { key: string }) => { initial[f.key] = auto[f.key] ?? ''; });
+    setFormData(initial);
+    setStep(2);
+    setPdfDone(false);
   }
+
+  function handleFieldChange(key: string, value: string) {
+    setFormData((prev: CertificateData) => ({ ...prev, [key]: value }));
+  }
+
+  async function handleDownloadPDF() {
+    if (!certRef.current || !selectedType) return;
+    setPdfLoading(true);
+    try {
+      const canvas = await html2canvas(certRef.current, {
+        scale: 2, useCORS: true, backgroundColor: '#FEFCF3', logging: false,
+      });
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      pdf.addImage(imgData, 'PNG', 0, 0, pdf.internal.pageSize.getWidth(), pdf.internal.pageSize.getHeight());
+      const def = CERTIFICATE_DEFINITIONS.find((d: { id: CertificateTypeId }) => d.id === selectedType)!;
+      const name = (student.full_name || 'certificate').replace(/\s+/g, '_');
+      const date = (formData.issue_date || todayString()).replace(/-/g, '');
+      pdf.save(`${def.title.replace(/[\s/]+/g, '_')}_${name}_${date}.pdf`);
+      setPdfDone(true);
+    } catch (e) {
+      console.error(e);
+      alert('PDF generation failed. Please try again.');
+    } finally {
+      setPdfLoading(false);
+    }
+  }
+
+  function handleReset() {
+    setStep(1); setSelectedType(null); setFormData({}); setPdfDone(false);
+  }
+
+  const def = selectedType
+    ? CERTIFICATE_DEFINITIONS.find((d: { id: CertificateTypeId }) => d.id === selectedType)
+    : null;
+
+  const manualFields = def
+    ? def.fields.filter((f: { key: string }) =>
+        !AUTO_FILL_KEYS.has(f.key) && f.key !== 'certificate_number' && f.key !== 'issue_date')
+    : [];
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Student ID Card — {academicYear}</h3>
-        <div className="flex gap-2">
-          <button onClick={printCard}
-            className="flex items-center gap-2 px-3 py-2 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors">
-            <Printer className="w-4 h-4" /> Print Card
-          </button>
-          <button onClick={printSheet}
-            className="flex items-center gap-2 px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-            <Printer className="w-4 h-4" /> Print 4 on A4
-          </button>
+    <div className="p-4 sm:p-6">
+      {/* Header row */}
+      <div className="flex items-center justify-between mb-5">
+        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+          {step === 1 ? 'Certificate Generator' : step === 2 ? 'Fill Details' : 'Preview & Download'}
+        </h3>
+        <div className="flex items-center gap-2">
+          {[1, 2, 3].map(n => (
+            <div key={n} className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
+              n < step ? 'bg-amber-500 text-white' : n === step ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'
+            }`}>{n < step ? '✓' : n}</div>
+          ))}
         </div>
       </div>
 
-      {/* Card preview */}
-      <div className="flex justify-center">
-        <div className="w-80 bg-white rounded-2xl overflow-hidden shadow-xl border border-slate-200">
-          {/* Card header */}
-          <div className="bg-gradient-to-r from-blue-700 to-blue-500 px-5 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow">
-                <div className="w-4 h-4 bg-blue-600 rounded-sm" />
-              </div>
-              <div>
-                <p className="text-white font-bold text-sm leading-tight">{schoolName}</p>
-                <p className="text-blue-200 text-xs">STUDENT ID CARD</p>
-              </div>
-            </div>
-            <div className="bg-white/20 rounded-md px-2 py-1">
-              <p className="text-white text-xs font-semibold">{academicYear}</p>
+      {/* STEP 1 — choose type */}
+      {step === 1 && (
+        <div>
+          <p className="text-sm text-slate-500 mb-4">
+            Select a certificate type for <strong className="text-slate-700">{student.full_name}</strong>.
+            Student details are filled automatically.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+            {CERTIFICATE_DEFINITIONS.map((d: { id: CertificateTypeId; icon: string; title: string }) => (
+              <button key={d.id} onClick={() => handleSelectType(d.id)}
+                className="flex flex-col items-center gap-2 p-3 border-2 border-slate-200 rounded-xl hover:border-amber-400 hover:bg-amber-50 transition-all text-center group">
+                <span className="text-2xl">{d.icon}</span>
+                <span className="text-xs font-semibold text-slate-600 group-hover:text-amber-700 leading-tight">{d.title}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* STEP 2 — manual fields + live preview */}
+      {step === 2 && def && (
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+            <CheckCircle className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+            <div className="text-xs text-emerald-800">
+              <p className="font-semibold mb-0.5">Auto-filled from student record</p>
+              <p className="text-emerald-600">Name, father's name, roll number, class{student.date_of_birth ? ', date of birth' : ''} — no need to type these.</p>
             </div>
           </div>
 
-          {/* Card body */}
-          <div className="px-5 py-4 flex gap-4 items-start">
-            {/* Photo */}
-            <div className="w-16 h-20 rounded-xl border-2 border-slate-200 overflow-hidden flex-shrink-0 bg-blue-100 flex items-center justify-center">
-              {student.photo_url
-                ? <img src={student.photo_url} alt="" className="w-full h-full object-cover"
-                    onError={e => { (e.target as HTMLImageElement).style.display='none'; }} />
-                : <span className="text-blue-700 font-bold text-2xl">{student.full_name.charAt(0).toUpperCase()}</span>
-              }
-            </div>
-
-            {/* Details */}
-            <div className="flex-1 min-w-0">
-              <p className="font-bold text-slate-800 text-sm mb-3 leading-tight">{student.full_name}</p>
-              <div className="space-y-1.5">
-                {[
-                  ['Father', student.father_name],
-                  ['Class', student.current_grade ? `${student.current_grade} — ${student.current_section ?? ''}` : null],
-                  ['Roll No.', student.roll_number],
-                  ['CNIC/B-Form', student.cnic],
-                ].map(([label, val]) => (
-                  <div key={label as string} className="flex gap-1 text-xs leading-tight">
-                    <span className="text-slate-400 font-semibold w-14 flex-shrink-0">{label}</span>
-                    <span className="text-slate-700">: {val || '—'}</span>
+          {manualFields.length > 0 && (
+            <div className="space-y-3">
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Additional Details</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {manualFields.map((field: { key: string; label: string; type: string; placeholder?: string; required?: boolean }) => (
+                  <div key={field.key} className={field.type === 'textarea' ? 'sm:col-span-2' : ''}>
+                    <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                      {field.label}{field.required && <span className="text-red-400 ml-0.5">*</span>}
+                    </label>
+                    {field.type === 'textarea' ? (
+                      <textarea value={formData[field.key] ?? ''} onChange={e => handleFieldChange(field.key, e.target.value)}
+                        placeholder={field.placeholder} rows={3}
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white resize-none" />
+                    ) : (
+                      <input type={field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : 'text'}
+                        value={formData[field.key] ?? ''} onChange={e => handleFieldChange(field.key, e.target.value)}
+                        placeholder={field.placeholder} min={field.type === 'number' ? 1 : undefined}
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
+                    )}
                   </div>
                 ))}
               </div>
             </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Issue Date</label>
+              <input type="date" value={formData.issue_date ?? ''} onChange={e => handleFieldChange('issue_date', e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">Certificate Number</label>
+              <input value={formData.certificate_number ?? ''} onChange={e => handleFieldChange('certificate_number', e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white font-mono text-xs" />
+            </div>
           </div>
 
-          {/* Card footer */}
-          <div className="bg-slate-50 border-t border-slate-100 px-5 py-2 flex items-center justify-between">
-            <p className="text-xs text-slate-400">If found, please return to school</p>
-            <p className="text-xs text-blue-500 font-semibold">Campus Core</p>
-          </div>
-        </div>
-      </div>
-
-      <p className="text-center text-xs text-slate-400 mt-4">
-        Preview — use the print buttons above to print
-      </p>
-    </div>
-  );
-}
-
-// ── Leaving Certificate Component ─────────────────────────────────────────────
-
-function CertificateTab({ student, schoolName }: { student: Student; schoolName: string }) {
-  const today = new Date().toISOString().split('T')[0];
-  const [certNo, setCertNo]       = useState(genCertNumber);
-  const [issueDate, setIssueDate] = useState(today);
-  const [leavingDate, setLeavingDate] = useState(today);
-  const [reason, setReason]       = useState('');
-  const [conduct, setConduct]     = useState('Good');
-  const [feeStatus, setFeeStatus] = useState<'Cleared' | 'Pending'>('Cleared');
-  const [saving, setSaving]       = useState(false);
-  const [saved, setSaved]         = useState(false);
-
-  const { settings } = useSchool();
-  const schoolId = settings?.school_id;
-
-  async function saveAndPrint() {
-    setSaving(true);
-    if (schoolId) {
-      await supabase.from('leaving_certificates').insert({
-        student_id: student.id,
-        school_id: schoolId,
-        certificate_number: certNo,
-        issue_date: issueDate,
-        last_class: student.current_grade ? `Class ${student.current_grade}-${student.current_section ?? ''}` : '',
-        reason,
-      }).select().single();
-    }
-    setSaving(false);
-    setSaved(true);
-    doPrint();
-  }
-
-  function doPrint() {
-    const html = `
-      <div style="padding:20mm 25mm;min-height:297mm;font-family:'Segoe UI',Arial,sans-serif;background:white;position:relative;">
-
-        <!-- Border -->
-        <div style="position:absolute;inset:8mm;border:3px double #1d4ed8;border-radius:4px;pointer-events:none;"></div>
-        <div style="position:absolute;inset:10.5mm;border:1px solid #93c5fd;border-radius:2px;pointer-events:none;"></div>
-
-        <!-- School header -->
-        <div style="text-align:center;margin-bottom:8mm;padding-bottom:6mm;border-bottom:2px solid #1d4ed8;">
-          <div style="display:inline-flex;align-items:center;justify-content:center;width:50px;height:50px;background:#1d4ed8;border-radius:12px;margin-bottom:6px;">
-            <div style="width:28px;height:28px;background:white;border-radius:6px;"></div>
-          </div>
-          <h1 style="font-size:22px;font-weight:800;color:#1e293b;margin:4px 0 2px;">${schoolName}</h1>
-          <p style="font-size:11px;color:#64748b;letter-spacing:2px;text-transform:uppercase;">Managed via Campus Core</p>
-        </div>
-
-        <!-- Certificate title -->
-        <div style="text-align:center;margin-bottom:8mm;">
-          <h2 style="font-size:18px;font-weight:700;color:#1d4ed8;letter-spacing:3px;text-transform:uppercase;margin-bottom:4px;">Leaving Certificate</h2>
-          <div style="width:80px;height:3px;background:#1d4ed8;margin:0 auto;border-radius:2px;"></div>
-        </div>
-
-        <!-- Cert No + Date row -->
-        <div style="display:flex;justify-content:space-between;margin-bottom:8mm;font-size:11px;color:#475569;">
-          <div><strong>Certificate No:</strong> ${certNo}</div>
-          <div><strong>Date of Issue:</strong> ${new Date(issueDate).toLocaleDateString('en-PK', { day:'2-digit', month:'long', year:'numeric' })}</div>
-        </div>
-
-        <!-- Body text -->
-        <div style="font-size:13px;color:#1e293b;line-height:2;margin-bottom:8mm;">
-          <p style="margin-bottom:6mm;">
-            This is to certify that <strong>${student.full_name}</strong>,
-            Son/Daughter of <strong>${student.father_name ?? '—'}</strong>,
-            bearing Roll No. <strong>${student.roll_number ?? '—'}</strong>
-            ${student.cnic ? `, CNIC/B-Form No. <strong>${student.cnic}</strong>` : ''},
-            was a bonafide student of <strong>Class ${student.current_grade ?? '—'}-${student.current_section ?? '—'}</strong>
-            at this institution.
-          </p>
-
-          <table style="width:100%;border-collapse:collapse;margin-bottom:6mm;">
-            ${[
-              ['Date of Admission', student.admission_date ? new Date(student.admission_date).toLocaleDateString('en-PK',{day:'2-digit',month:'long',year:'numeric'}) : '—'],
-              ['Date of Birth', student.date_of_birth ? new Date(student.date_of_birth).toLocaleDateString('en-PK',{day:'2-digit',month:'long',year:'numeric'}) : '—'],
-              ['Date of Leaving', new Date(leavingDate).toLocaleDateString('en-PK',{day:'2-digit',month:'long',year:'numeric'})],
-              ['Last Class Attended', student.current_grade ? `Class ${student.current_grade}-${student.current_section ?? ''}` : '—'],
-              ['Reason for Leaving', reason || '—'],
-              ['Character &amp; Conduct', conduct],
-              ['Fee Clearance Status', feeStatus],
-            ].map(([label, val]) => `
-              <tr style="border-bottom:1px solid #f1f5f9;">
-                <td style="padding:5px 0;font-weight:600;color:#475569;width:45%;font-size:12px;">${label}</td>
-                <td style="padding:5px 0;color:#1e293b;font-size:12px;">: &nbsp;${val}</td>
-              </tr>`).join('')}
-          </table>
-        </div>
-
-        <!-- Signature -->
-        <div style="display:flex;justify-content:flex-end;margin-top:14mm;">
-          <div style="text-align:center;min-width:160px;">
-            <div style="height:40px;border-bottom:1.5px solid #1e293b;margin-bottom:4px;"></div>
-            <p style="font-size:11px;font-weight:700;color:#1e293b;">Principal</p>
-            <p style="font-size:10px;color:#64748b;margin-top:2px;">${schoolName}</p>
-          </div>
-        </div>
-
-        <!-- Stamp area -->
-        <div style="position:absolute;bottom:22mm;left:30mm;">
-          <div style="width:70px;height:70px;border:2px dashed #cbd5e1;border-radius:50%;display:flex;align-items:center;justify-content:center;">
-            <p style="font-size:8px;color:#cbd5e1;text-align:center;line-height:1.4;">Official<br/>Stamp</p>
-          </div>
-        </div>
-
-      </div>
-      <style>@media print { @page { size: A4; margin: 0; } }</style>
-    `;
-    printHTML(html, 'Leaving Certificate');
-  }
-
-  return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Leaving Certificate</h3>
-        <div className="flex gap-2">
-          <button onClick={doPrint}
-            className="flex items-center gap-2 px-3 py-2 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors">
-            <Printer className="w-4 h-4" /> Preview &amp; Print
-          </button>
-          <button onClick={saveAndPrint} disabled={saving}
-            className="flex items-center gap-2 px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-60">
-            <Save className="w-4 h-4" /> {saving ? 'Saving...' : saved ? 'Saved ✓' : 'Save & Print'}
-          </button>
-        </div>
-      </div>
-
-      {/* Form */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-
-        {/* Certificate No */}
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Certificate Number</label>
-          <input value={certNo} onChange={e => setCertNo(e.target.value)}
-            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white font-mono" />
-        </div>
-
-        {/* Issue Date */}
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Date of Issue</label>
-          <input type="date" value={issueDate} onChange={e => setIssueDate(e.target.value)}
-            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
-        </div>
-
-        {/* Leaving Date */}
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Date of Leaving</label>
-          <input type="date" value={leavingDate} onChange={e => setLeavingDate(e.target.value)}
-            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
-        </div>
-
-        {/* Fee Status */}
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Fee Clearance Status</label>
-          <div className="relative">
-            <select value={feeStatus} onChange={e => setFeeStatus(e.target.value as 'Cleared' | 'Pending')}
-              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white appearance-none">
-              <option value="Cleared">Cleared</option>
-              <option value="Pending">Pending</option>
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-          </div>
-        </div>
-
-        {/* Character & Conduct */}
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Character &amp; Conduct</label>
-          <div className="relative">
-            <select value={conduct} onChange={e => setConduct(e.target.value)}
-              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white appearance-none">
-              <option>Excellent</option>
-              <option>Very Good</option>
-              <option>Good</option>
-              <option>Satisfactory</option>
-              <option>Needs Improvement</option>
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-          </div>
-        </div>
-
-        {/* Reason */}
-        <div className="flex flex-col gap-1 sm:col-span-2">
-          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Reason for Leaving</label>
-          <input value={reason} onChange={e => setReason(e.target.value)}
-            placeholder="e.g. Family relocated, transfer to another school..."
-            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
-        </div>
-      </div>
-
-      {/* Preview card */}
-      <div className="mt-6 p-5 border-2 border-dashed border-blue-200 rounded-2xl bg-blue-50/40">
-        <p className="text-xs font-semibold text-blue-500 uppercase tracking-wider mb-3">Certificate Preview</p>
-        <div className="space-y-1.5 text-sm text-slate-600">
-          <p>This is to certify that <strong className="text-slate-800">{student.full_name}</strong>, S/D of <strong className="text-slate-800">{student.father_name ?? '—'}</strong>, Roll No. <strong className="text-slate-800">{student.roll_number ?? '—'}</strong>, was a student of <strong className="text-slate-800">Class {student.current_grade}-{student.current_section}</strong>.</p>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1 mt-3 text-xs">
-            {[
-              ['Certificate No', certNo],
-              ['Date of Issue', issueDate],
-              ['Date of Leaving', leavingDate],
-              ['Reason', reason || '—'],
-              ['Conduct', conduct],
-              ['Fee Status', feeStatus],
-            ].map(([l, v]) => (
-              <div key={l} className="flex gap-1">
-                <span className="text-slate-400 font-semibold">{l}:</span>
-                <span className="text-slate-700">{v}</span>
+          {/* Live preview */}
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Live Preview</p>
+            <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm">
+              <div style={{ transform:'scale(0.5)', transformOrigin:'top left', width:'1100px', height:'778px', marginBottom:'-389px' }}>
+                <CertificatePreview typeId={selectedType!} data={formData} settings={schoolSettings} />
               </div>
-            ))}
+            </div>
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <button onClick={() => setStep(1)} className="flex items-center gap-1.5 px-3 py-2 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors">← Back</button>
+            <button onClick={() => setStep(3)} className="flex items-center gap-1.5 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium">Continue →</button>
           </div>
         </div>
-      </div>
+      )}
+
+      {/* STEP 3 — full preview + download */}
+      {step === 3 && def && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => setStep(2)} className="flex items-center gap-1.5 px-3 py-2 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors">← Edit</button>
+            <button onClick={handleDownloadPDF} disabled={pdfLoading}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors font-medium disabled:opacity-60">
+              {pdfLoading ? '⏳ Generating...' : pdfDone ? '✓ Downloaded!' : '⬇ Download PDF'}
+            </button>
+            <button onClick={handleReset} className="flex items-center gap-1.5 px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium">
+              + New Certificate
+            </button>
+          </div>
+
+          {pdfDone && (
+            <div className="flex items-center gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-sm text-emerald-700 font-medium">
+              <CheckCircle className="w-4 h-4" /> Certificate PDF downloaded successfully!
+            </div>
+          )}
+
+          <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm">
+            <div style={{ transform:'scale(0.62)', transformOrigin:'top left', width:'1100px', height:'778px', marginBottom:'-296px' }}>
+              <CertificatePreview ref={certRef} typeId={selectedType!} data={formData} settings={schoolSettings} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -581,6 +943,8 @@ export default function StudentProfiles() {
 
   const [fees, setFees] = useState<FeeRecord[]>([]);
   const [attendance, setAttendance] = useState<AttendanceSummary[]>([]);
+  const [rawAttendance, setRawAttendance] = useState<AttendanceRecord[]>([]);
+  const [weeklyOffDays, setWeeklyOffDays] = useState<number[]>([]);
   const [examResults, setExamResults] = useState<Result[]>([]);
   const [documents, setDocuments] = useState<StudentDoc[]>([]);
   const [tabLoading, setTabLoading] = useState(false);
@@ -591,6 +955,13 @@ export default function StudentProfiles() {
   const [showDocUpload, setShowDocUpload] = useState(false);
   const [docError, setDocError] = useState('');
   const docFileRef = useRef<HTMLInputElement>(null);
+
+  // Receipt state
+  const [showReceipt, setShowReceipt] = useState(false);
+  const [receiptData, setReceiptData] = useState<any>(null);
+
+  // Roll number generation state
+  const [generatingRoll, setGeneratingRoll] = useState(false);
 
   // ── Search ──────────────────────────────────────────────────────────────────
 
@@ -622,37 +993,45 @@ export default function StudentProfiles() {
   // ── Load tab data ───────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!selectedStudent || activeTab === 'profile' || activeTab === 'idcard' || activeTab === 'certificate') return;
+    if (!selectedStudent || activeTab === 'profile' || activeTab === 'certificate') return;
     setTabLoading(true);
 
     if (activeTab === 'fees') {
       supabase.from('fee_records')
-        .select('id, fee_month, fee_year, total_amount, amount_paid, status, payment_date')
+        .select('id, fee_month, fee_year, total_amount, amount_paid, status, payment_date, payment_method')
         .eq('student_id', selectedStudent.id).eq('fee_year', selectedYear)
         .order('fee_month', { ascending: false })
         .then(({ data }) => { setFees(data ?? []); setTabLoading(false); });
 
     } else if (activeTab === 'attendance') {
-      supabase.from('attendance_records')
-        .select('attendance_date, status')
-        .eq('student_id', selectedStudent.id)
-        .gte('attendance_date', `${selectedYear}-01-01`)
-        .lte('attendance_date', `${selectedYear}-12-31`)
-        .then(({ data }) => {
-          if (!data) { setAttendance([]); setTabLoading(false); return; }
-          const map: Record<string, AttendanceSummary> = {};
-          data.forEach(r => {
-            const d = new Date(r.attendance_date);
-            const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-            if (!map[key]) map[key] = { month: key, present:0, absent:0, late:0, leave:0 };
-            if (r.status==='present') map[key].present++;
-            else if (r.status==='absent') map[key].absent++;
-            else if (r.status==='late') map[key].late++;
-            else if (r.status==='leave') map[key].leave++;
-          });
-          setAttendance(Object.values(map).sort((a,b)=>b.month.localeCompare(a.month)));
-          setTabLoading(false);
+      Promise.all([
+        supabase.from('attendance_records')
+          .select('attendance_date, status')
+          .eq('student_id', selectedStudent.id)
+          .gte('attendance_date', `${selectedYear}-01-01`)
+          .lte('attendance_date', `${selectedYear}-12-31`),
+        supabase.from('school_settings')
+          .select('weekly_off_days')
+          .eq('school_id', schoolId)
+          .single(),
+      ]).then(([attRes, settRes]) => {
+        const raw: AttendanceRecord[] = attRes.data ?? [];
+        setRawAttendance(raw);
+        setWeeklyOffDays((settRes.data as { weekly_off_days?: number[] } | null)?.weekly_off_days ?? []);
+
+        const map: Record<string, AttendanceSummary> = {};
+        raw.forEach(r => {
+          const d = new Date(r.attendance_date);
+          const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+          if (!map[key]) map[key] = { month: key, present:0, absent:0, late:0, leave:0 };
+          if (r.status==='present') map[key].present++;
+          else if (r.status==='absent') map[key].absent++;
+          else if (r.status==='late') map[key].late++;
+          else if (r.status==='leave') map[key].leave++;
         });
+        setAttendance(Object.values(map).sort((a,b) => a.month.localeCompare(b.month)));
+        setTabLoading(false);
+      });
 
     } else if (activeTab === 'results') {
       supabase.from('student_results')
@@ -739,6 +1118,117 @@ export default function StudentProfiles() {
     setDocuments(prev => prev.filter(d => d.id !== docId));
   }
 
+  // ── Receipt generation for fee record ───────────────────────────────────────
+
+  async function generateReceiptForFee(fee: FeeRecord) {
+    if (!selectedStudent) return;
+
+    const { data: schoolSettings } = await supabase
+      .from('school_settings')
+      .select('school_name, address, phone, email, logo_url, principal_name')
+      .eq('school_id', schoolId)
+      .single();
+
+    const { data: previousFees } = await supabase
+      .from('fee_records')
+      .select('total_amount, amount_paid, status')
+      .eq('student_id', selectedStudent.id)
+      .eq('fee_year', fee.fee_year)
+      .lt('fee_month', fee.fee_month);
+
+    let previousBalance = 0;
+    if (previousFees) {
+      for (const pf of previousFees) {
+        if (pf.status !== 'Paid') {
+          previousBalance += (pf.total_amount || 0) - (pf.amount_paid || 0);
+        }
+      }
+    }
+
+    const totalAmount = fee.total_amount || 0;
+    const amountPaid = fee.amount_paid || totalAmount;
+    const remaining = (totalAmount + previousBalance) - amountPaid;
+
+    const year = fee.fee_year.toString().slice(-2);
+    const month = fee.fee_month.toString().padStart(2, '0');
+    const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+    const receiptNumber = `RCT-${year}${month}-${random}`;
+
+    setReceiptData({
+      receiptNumber,
+      schoolName: schoolSettings?.school_name || '',
+      schoolLogo: schoolSettings?.logo_url || null,
+      schoolAddress: schoolSettings?.address || '',
+      schoolPhone: schoolSettings?.phone || '',
+      schoolEmail: schoolSettings?.email || '',
+      studentName: selectedStudent.full_name,
+      rollNumber: selectedStudent.roll_number || '',
+      className: `${selectedStudent.current_grade || ''}${selectedStudent.current_section || ''}`,
+      fatherName: selectedStudent.father_name || '',
+      feeMonth: fee.fee_month,
+      feeYear: fee.fee_year,
+      totalAmount: totalAmount,
+      amountPaid: amountPaid,
+      previousBalance: previousBalance,
+      remainingBalance: remaining < 0 ? 0 : remaining,
+      paymentDate: fee.payment_date || new Date().toISOString().split('T')[0],
+      paymentMethod: fee.payment_method || 'Cash',
+      receivedBy: schoolSettings?.principal_name || 'Principal',
+    });
+
+    setShowReceipt(true);
+  }
+
+  // ── Roll number update when grade/section changes ───────────────────────────
+
+  async function handleGradeSectionChange(grade: number, section: string) {
+    if (!selectedStudent || !schoolId) return;
+    
+    const oldGrade = editData.current_grade || selectedStudent.current_grade;
+    const oldSection = editData.current_section || selectedStudent.current_section;
+    
+    if (oldGrade === grade && oldSection === section) return;
+    
+    setGeneratingRoll(true);
+    const newRollNumber = await getNextRollNumber(schoolId, grade, section);
+    
+    if (newRollNumber) {
+      setEditData(prev => ({
+        ...prev,
+        current_grade: grade,
+        current_section: section,
+        roll_number: newRollNumber,
+      }));
+    } else {
+      setEditData(prev => ({
+        ...prev,
+        current_grade: grade,
+        current_section: section,
+      }));
+    }
+    setGeneratingRoll(false);
+  }
+
+  // ── Manual roll number change with duplicate check ─────────────────────────
+
+  async function handleRollNumberChange(rollNumber: string) {
+    if (!rollNumber.trim()) {
+      setEditData(prev => ({ ...prev, roll_number: rollNumber }));
+      return;
+    }
+    
+    const duplicate = searchResults.find(s => 
+      s.roll_number === rollNumber && s.id !== selectedStudent?.id
+    );
+    
+    if (duplicate) {
+      alert(`Roll number "${rollNumber}" already exists for student: ${duplicate.full_name}. Please use a different roll number.`);
+      return;
+    }
+    
+    setEditData(prev => ({ ...prev, roll_number: rollNumber }));
+  }
+
   // ── Edit ──────────────────────────────────────────────────────────────────────
 
   function startEdit() { setEditData({ ...selectedStudent }); setEditing(true); }
@@ -748,6 +1238,16 @@ export default function StudentProfiles() {
   async function saveEdit() {
     if (!selectedStudent) return;
     setSaving(true);
+    
+    const duplicate = searchResults.find(s => 
+      s.roll_number === editData.roll_number && s.id !== selectedStudent.id
+    );
+    if (duplicate) {
+      alert(`Roll number "${editData.roll_number}" already exists. Please use a different roll number.`);
+      setSaving(false);
+      return;
+    }
+    
     const { data, error } = await supabase.from('students').update({
       full_name: editData.full_name, father_name: editData.father_name, father_phone: editData.father_phone,
       phone: editData.phone, cnic: editData.cnic, address: editData.address,
@@ -918,7 +1418,6 @@ export default function StudentProfiles() {
             { id:'attendance',  label:'Attendance',   icon:CalendarCheck },
             { id:'results',     label:'Results',      icon:ClipboardList },
             { id:'documents',   label:'Documents',    icon:FileText },
-            { id:'idcard', label:'ID Card', icon:Contact },
             { id:'certificate', label:'Certificate',  icon:ScrollText },
           ] as const).map(({ id, label, icon: Icon }) => (
             <button key={id} onClick={() => setActiveTab(id)}
@@ -961,10 +1460,67 @@ export default function StudentProfiles() {
             <div className="border-t border-slate-100 pt-5">
               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Academic Information</h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                <InfoField label="Roll Number"    value={displayData.roll_number}                                          editing={editing} name="roll_number"    onChange={handleFieldChange} />
-                <InfoField label="Admission Date" value={displayData.admission_date}                                       editing={editing} name="admission_date" onChange={handleFieldChange} type="date" />
-                <InfoField label="Grade"          value={displayData.current_grade?String(displayData.current_grade):''} editing={editing} name="current_grade"  onChange={handleFieldChange} />
-                <InfoField label="Section"        value={displayData.current_section}                                      editing={editing} name="current_section" onChange={handleFieldChange} />
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Roll Number</label>
+                  {editing ? (
+                    <div className="flex items-center gap-2">
+                      <input 
+                        type="text" 
+                        value={editData.roll_number || ''} 
+                        onChange={e => handleRollNumberChange(e.target.value)}
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white font-mono"
+                      />
+                      {generatingRoll && <Loader className="w-4 h-4 animate-spin text-slate-400" />}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-700 font-medium">{selectedStudent.roll_number || '—'}</p>
+                  )}
+                  <p className="text-xs text-slate-400 mt-1">Format: 5A-001 (Class-Section-Sequence)</p>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Grade</label>
+                  {editing ? (
+                    <div className="flex items-center gap-2">
+                      <select 
+                        value={editData.current_grade || 1} 
+                        onChange={e => {
+                          const grade = parseInt(e.target.value);
+                          const section = editData.current_section || selectedStudent.current_section || 'A';
+                          handleGradeSectionChange(grade, section);
+                        }}
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      >
+                        {[1,2,3,4,5,6,7,8,9,10,11,12].map(g => (
+                          <option key={g} value={g}>Class {g}</option>
+                        ))}
+                      </select>
+                      {generatingRoll && <Loader className="w-4 h-4 animate-spin text-slate-400" />}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-700 font-medium">{selectedStudent.current_grade || '—'}</p>
+                  )}
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Section</label>
+                  {editing ? (
+                    <select 
+                      value={editData.current_section || 'A'} 
+                      onChange={e => {
+                        const section = e.target.value;
+                        const grade = editData.current_grade || selectedStudent.current_grade || 1;
+                        handleGradeSectionChange(grade, section);
+                      }}
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    >
+                      {['A','B','C','D','E'].map(s => (
+                        <option key={s} value={s}>Section {s}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <p className="text-sm text-slate-700 font-medium">{selectedStudent.current_section || '—'}</p>
+                  )}
+                </div>
+                <InfoField label="Admission Date" value={displayData.admission_date} editing={editing} name="admission_date" onChange={handleFieldChange} type="date" />
                 <div className="flex flex-col gap-1">
                   <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Status</span>
                   {editing ? (
@@ -980,6 +1536,22 @@ export default function StudentProfiles() {
                     </div>
                   ) : <StatusBadge status={selectedStudent.status} />}
                 </div>
+              </div>
+
+              {/* Print Buttons */}
+              <div className="mt-6 pt-4 border-t border-slate-100 flex flex-wrap gap-2">
+                <button onClick={() => printFullRecord(selectedStudent, fees, attendance, rawAttendance, weeklyOffDays, examResults, schoolName, settings?.logo_url || null, selectedYear)}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                  <Printer className="w-3.5 h-3.5" /> Print Full Record
+                </button>
+                <button onClick={() => printFeeHistory(selectedStudent, fees, schoolName, settings?.logo_url || null, selectedYear)}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                  <Printer className="w-3.5 h-3.5" /> Print Fee History
+                </button>
+                <button onClick={() => printAttendanceHistory(selectedStudent, attendance, rawAttendance, weeklyOffDays, schoolName, settings?.logo_url || null, selectedYear)}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                  <Printer className="w-3.5 h-3.5" /> Print Attendance
+                </button>
               </div>
             </div>
           </div>
@@ -1013,7 +1585,7 @@ export default function StudentProfiles() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-slate-100">
-                        {['Month','Total','Paid','Status','Date'].map(h => (
+                        {['Month','Total','Paid','Status','Date','Action'].map(h => (
                           <th key={h} className={`pb-3 text-xs font-semibold text-slate-400 uppercase tracking-wider ${h==='Month'?'text-left':'text-center'} ${h==='Date'?'hidden sm:table-cell':''}`}>{h}</th>
                         ))}
                       </tr>
@@ -1028,6 +1600,14 @@ export default function StudentProfiles() {
                           <td className="py-3 text-center text-slate-400 text-xs hidden sm:table-cell">
                             {f.payment_date ? new Date(f.payment_date).toLocaleDateString('en-PK') : '—'}
                           </td>
+                          <td className="py-3 text-center">
+                            {f.status === 'Paid' && (
+                              <button onClick={() => generateReceiptForFee(f)} 
+                                className="text-xs px-2 py-1 rounded-lg font-medium bg-blue-50 text-blue-600 hover:bg-blue-100 flex items-center gap-1 mx-auto">
+                                <Printer className="w-3 h-3" /> Receipt
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1035,6 +1615,12 @@ export default function StudentProfiles() {
                 </div>
               </>
             )}
+            <div className="mt-4">
+              <button onClick={() => printFeeHistory(selectedStudent, fees, schoolName, settings?.logo_url || null, selectedYear)}
+                className="flex items-center gap-1.5 px-3 py-2 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                <Printer className="w-3.5 h-3.5" /> Print Fee History
+              </button>
+            </div>
           </div>
         )}
 
@@ -1042,130 +1628,225 @@ export default function StudentProfiles() {
         {activeTab === 'attendance' && (
           <div className="p-6">
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Attendance — {selectedYear}</h3>
-            {tabLoading ? <div className="flex justify-center py-10"><div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" /></div>
-            : attendance.length===0 ? (
-              <div className="text-center py-12 text-slate-400">
-                <CalendarCheck className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                <p className="text-sm">No attendance records for {selectedYear}</p>
-              </div>
-            ) : (
-              <>
-                <div className={`flex items-center justify-between p-4 rounded-xl mb-4 ${attPct>=75?'bg-emerald-50 border border-emerald-100':'bg-red-50 border border-red-100'}`}>
-                  <div className="grid grid-cols-4 gap-6 flex-1">
+            {tabLoading
+              ? <div className="flex justify-center py-10"><div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" /></div>
+              : attendance.length === 0
+              ? (
+                <div className="text-center py-12 text-slate-400">
+                  <CalendarCheck className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                  <p className="text-sm">No attendance records for {selectedYear}</p>
+                </div>
+              ) : (
+                <>
+                  <div className={`flex items-center justify-between p-4 rounded-xl mb-6 ${attPct>=75?'bg-emerald-50 border border-emerald-100':'bg-red-50 border border-red-100'}`}>
+                    <div className="grid grid-cols-4 gap-6 flex-1">
+                      {[
+                        {label:'Present', value:attTotals.present, Icon:CheckCircle, color:'text-emerald-600'},
+                        {label:'Absent',  value:attTotals.absent,  Icon:AlertCircle, color:'text-red-500'},
+                        {label:'Late',    value:attTotals.late,    Icon:Clock,       color:'text-amber-500'},
+                        {label:'Leave',   value:attTotals.leave,   Icon:MinusCircle, color:'text-slate-400'},
+                      ].map(({ label, value, Icon, color }) => (
+                        <div key={label} className="text-center">
+                          <Icon className={`w-4 h-4 mx-auto mb-1 ${color}`} />
+                          <p className="text-xl font-bold text-slate-800">{value}</p>
+                          <p className="text-xs text-slate-500">{label}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="ml-6 text-right flex-shrink-0">
+                      <p className={`text-3xl font-bold ${attPct>=75?'text-emerald-600':'text-red-600'}`}>{attPct}%</p>
+                      <p className="text-xs text-slate-500 mt-0.5">Year total</p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-3 mb-5">
                     {[
-                      {label:'Present', value:attTotals.present, Icon:CheckCircle, color:'text-emerald-600'},
-                      {label:'Absent',  value:attTotals.absent,  Icon:AlertCircle, color:'text-red-500'},
-                      {label:'Late',    value:attTotals.late,    Icon:Clock,       color:'text-amber-500'},
-                      {label:'Leave',   value:attTotals.leave,   Icon:MinusCircle, color:'text-slate-400'},
-                    ].map(({ label, value, Icon, color }) => (
-                      <div key={label} className="text-center">
-                        <Icon className={`w-4 h-4 mx-auto mb-1 ${color}`} />
-                        <p className="text-xl font-bold text-slate-800">{value}</p>
-                        <p className="text-xs text-slate-500">{label}</p>
+                      { color:'bg-emerald-500', label:'Present' },
+                      { color:'bg-red-400',     label:'Absent' },
+                      { color:'bg-amber-400',   label:'Late' },
+                      { color:'bg-blue-300',    label:'Leave' },
+                      { color:'bg-slate-200',   label:'Off day' },
+                      { color:'bg-white border border-slate-200', label:'No record' },
+                    ].map(({ color, label }) => (
+                      <div key={label} className="flex items-center gap-1.5 text-xs text-slate-500">
+                        <div className={`w-3 h-3 rounded-sm ${color}`} />
+                        {label}
                       </div>
                     ))}
                   </div>
-                  <div className="ml-6 text-right flex-shrink-0">
-                    <p className={`text-3xl font-bold ${attPct>=75?'text-emerald-600':'text-red-600'}`}>{attPct}%</p>
-                    <p className="text-xs text-slate-500 mt-0.5">Year total</p>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  {attendance.map(a => {
-                    const total = a.present+a.absent+a.late+a.leave;
-                    const pct = total>0?Math.round((a.present/total)*100):0;
-                    const [y,mo] = a.month.split('-');
-                    return (
-                      <div key={a.month} className="border border-slate-100 rounded-xl p-4">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="font-semibold text-slate-700 text-sm">{MONTH_NAMES[Number(mo)-1]} {y}</span>
-                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${pct>=75?'bg-emerald-50 text-emerald-700':'bg-red-50 text-red-600'}`}>{pct}%</span>
-                        </div>
-                        <div className="grid grid-cols-4 gap-2 text-center">
-                          {[
-                            {label:'P',  value:a.present, color:'text-emerald-600 bg-emerald-50'},
-                            {label:'A',  value:a.absent,  color:'text-red-500 bg-red-50'},
-                            {label:'L',  value:a.late,    color:'text-amber-600 bg-amber-50'},
-                            {label:'Lv', value:a.leave,   color:'text-slate-500 bg-slate-50'},
-                          ].map(({ label, value, color }) => (
-                            <div key={label} className={`rounded-lg py-1.5 ${color}`}>
-                              <p className="text-base font-bold">{value}</p>
-                              <p className="text-xs opacity-70">{label}</p>
+
+                  <div className="space-y-6">
+                    {attendance.map(a => {
+                      const [yr, mo] = a.month.split('-').map(Number);
+                      const total = a.present+a.absent+a.late+a.leave;
+                      const pct   = total>0 ? Math.round((a.present/total)*100) : 0;
+
+                      const dayMap: Record<string, string> = {};
+                      rawAttendance.forEach(r => { dayMap[r.attendance_date] = r.status; });
+
+                      const daysInMonth = new Date(yr, mo, 0).getDate();
+                      const firstWeekday = new Date(yr, mo-1, 1).getDay();
+
+                      function dayColor(dateStr: string, dow: number): string {
+                        if (dayMap[dateStr]) {
+                          const s = dayMap[dateStr];
+                          if (s==='present') return 'bg-emerald-500 text-white';
+                          if (s==='absent')  return 'bg-red-400 text-white';
+                          if (s==='late')    return 'bg-amber-400 text-white';
+                          if (s==='leave')   return 'bg-blue-300 text-white';
+                        }
+                        if (weeklyOffDays.includes(dow)) return 'bg-slate-200 text-slate-400';
+                        return 'bg-white text-slate-300 border border-slate-100';
+                      }
+
+                      return (
+                        <div key={a.month} className="border border-slate-200 rounded-xl overflow-hidden">
+                          <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-100">
+                            <span className="font-semibold text-slate-700 text-sm">{MONTH_NAMES[mo-1]} {yr}</span>
+                            <div className="flex items-center gap-3 text-xs">
+                              <span className="text-emerald-600 font-semibold">P:{a.present}</span>
+                              <span className="text-red-500 font-semibold">A:{a.absent}</span>
+                              <span className="text-amber-500 font-semibold">L:{a.late}</span>
+                              <span className="text-blue-400 font-semibold">Lv:{a.leave}</span>
+                              <span className={`font-bold px-2 py-0.5 rounded-full ${pct>=75?'bg-emerald-100 text-emerald-700':'bg-red-100 text-red-600'}`}>{pct}%</span>
                             </div>
-                          ))}
+                          </div>
+
+                          <div className="grid grid-cols-7 bg-slate-50 border-b border-slate-100">
+                            {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => (
+                              <div key={d} className="text-center text-xs font-semibold text-slate-400 py-2">{d}</div>
+                            ))}
+                          </div>
+
+                          <div className="grid grid-cols-7 gap-0.5 p-2 bg-slate-50">
+                            {Array.from({ length: firstWeekday }).map((_, i) => (
+                              <div key={`empty-${i}`} />
+                            ))}
+                            {Array.from({ length: daysInMonth }, (_, i) => {
+                              const day = i+1;
+                              const dow = new Date(yr, mo-1, day).getDay();
+                              const dateStr = `${yr}-${String(mo).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+                              const colorCls = dayColor(dateStr, dow);
+                              return (
+                                <div key={day} className={`aspect-square flex items-center justify-center rounded-lg text-xs font-semibold ${colorCls}`}>
+                                  {day}
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            )}
+                      );
+                    })}
+                  </div>
+                </>
+              )
+            }
+            <div className="mt-4">
+              <button onClick={() => printAttendanceHistory(selectedStudent, attendance, rawAttendance, weeklyOffDays, schoolName, settings?.logo_url || null, selectedYear)}
+                className="flex items-center gap-1.5 px-3 py-2 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                <Printer className="w-3.5 h-3.5" /> Print Attendance
+              </button>
+            </div>
           </div>
         )}
 
         {/* ── Results ──────────────────────────────────────────────────────────── */}
         {activeTab === 'results' && (
           <div className="p-6">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Exam Results — {selectedYear}</h3>
-            {tabLoading ? <div className="flex justify-center py-10"><div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" /></div>
-            : sortedExamGroups.length===0 ? (
-              <div className="text-center py-12 text-slate-400">
-                <ClipboardList className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                <p className="text-sm">No results found for {selectedYear}</p>
-              </div>
-            ) : (
-              <div className="space-y-5">
-                {sortedExamGroups.map(([key, { label, rows }]) => {
-                  const totObt = rows.reduce((s,r)=>s+(r.obtained_marks??0),0);
-                  const totMrk = rows.reduce((s,r)=>s+(r.total_marks??0),0);
-                  const pct = totMrk>0?Math.round((totObt/totMrk)*100):0;
-                  const allPass = rows.every(r=>r.pass_fail==='pass');
-                  return (
-                    <div key={key} className="border border-slate-200 rounded-xl overflow-hidden">
-                      <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-100">
-                        <div className="flex items-center gap-2">
-                          <BookOpen className="w-4 h-4 text-blue-500" />
-                          <span className="text-sm font-bold text-slate-700">{label}</span>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Exam Results — {selectedYear}</h3>
+              {sortedExamGroups.length > 0 && (
+                <button
+                  onClick={() => printResults(sortedExamGroups, selectedStudent, schoolName, selectedYear, settings?.logo_url || null)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  <Printer className="w-3.5 h-3.5" /> Print All
+                </button>
+              )}
+            </div>
+            {tabLoading
+              ? <div className="flex justify-center py-10"><div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" /></div>
+              : sortedExamGroups.length===0
+              ? (
+                <div className="text-center py-12 text-slate-400">
+                  <ClipboardList className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                  <p className="text-sm">No results found for {selectedYear}</p>
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  {sortedExamGroups.map(([key, { label, rows }]) => {
+                    const totObt = rows.reduce((s,r)=>s+(r.obtained_marks??0),0);
+                    const totMrk = rows.reduce((s,r)=>s+(r.total_marks??0),0);
+                    const pct = totMrk>0?Math.round((totObt/totMrk)*100):0;
+                    const allPass = rows.every(r=>r.pass_fail==='pass');
+                    return (
+                      <div key={key} className="border border-slate-200 rounded-xl overflow-hidden">
+                        <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-100">
+                          <div className="flex items-center gap-2">
+                            <BookOpen className="w-4 h-4 text-blue-500" />
+                            <span className="text-sm font-bold text-slate-700">{label}</span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs text-slate-500 font-medium">{totObt}/{totMrk} ({pct}%)</span>
+                            <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${allPass?'bg-emerald-100 text-emerald-700':'bg-red-100 text-red-600'}`}>
+                              {allPass?'PASS':'FAIL'}
+                            </span>
+                            <button
+                              onClick={() => printResults([[key, { label, rows, sortOrder:0 }]], selectedStudent, schoolName, selectedYear, settings?.logo_url || null)}
+                              className="flex items-center gap-1 px-2 py-1 text-xs border border-slate-200 rounded-lg hover:bg-white text-slate-500 transition-colors"
+                            >
+                              <Printer className="w-3 h-3" /> Print
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <span className="text-xs text-slate-500 font-medium">{totObt}/{totMrk} ({pct}%)</span>
-                          <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${allPass?'bg-emerald-100 text-emerald-700':'bg-red-100 text-red-600'}`}>
-                            {allPass?'PASS':'FAIL'}
-                          </span>
-                        </div>
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-slate-100 bg-slate-50/50">
+                              {['Subject','Obtained','Total','%','Grade','Result'].map(h => (
+                                <th key={h} className={`px-4 py-2 text-xs text-slate-400 font-semibold ${h==='Subject'?'text-left':'text-center'}`}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map(r => {
+                              const sp = r.total_marks>0?Math.round((r.obtained_marks/r.total_marks)*100):0;
+                              return (
+                                <tr key={r.id} className="border-b border-slate-50 hover:bg-slate-50">
+                                  <td className="px-4 py-2.5 text-slate-700 font-medium">{r.subject_name}</td>
+                                  <td className="px-4 py-2.5 text-center font-bold text-slate-700">{r.obtained_marks}</td>
+                                  <td className="px-4 py-2.5 text-center text-slate-500">{r.total_marks}</td>
+                                  <td className="px-4 py-2.5 text-center"><span className={sp>=40?'text-emerald-600 font-semibold':'text-red-500 font-semibold'}>{sp}%</span></td>
+                                  <td className="px-4 py-2.5 text-center font-semibold text-slate-600">{r.grade ?? '—'}</td>
+                                  <td className="px-4 py-2.5 text-center">
+                                    <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${r.pass_fail==='pass'?'bg-emerald-50 text-emerald-700':'bg-red-50 text-red-600'}`}>
+                                      {r.pass_fail?.toUpperCase()}
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                          <tfoot>
+                            <tr className="bg-slate-50 border-t-2 border-slate-200">
+                              <td className="px-4 py-2.5 text-xs font-bold text-slate-600 uppercase">Total</td>
+                              <td className="px-4 py-2.5 text-center font-bold text-slate-800">{totObt}</td>
+                              <td className="px-4 py-2.5 text-center font-bold text-slate-800">{totMrk}</td>
+                              <td className="px-4 py-2.5 text-center font-bold">{pct}%</td>
+                              <td />
+                              <td className="px-4 py-2.5 text-center">
+                                <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${allPass?'bg-emerald-100 text-emerald-700':'bg-red-100 text-red-600'}`}>
+                                  {allPass?'PASS':'FAIL'}
+                                </span>
+                              </td>
+                            </tr>
+                          </tfoot>
+                        </table>
                       </div>
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b border-slate-100 bg-slate-50/50">
-                            {['Subject','Obtained','Total','%','Result'].map(h => (
-                              <th key={h} className={`px-4 py-2 text-xs text-slate-400 font-semibold ${h==='Subject'?'text-left':'text-center'}`}>{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {rows.map(r => {
-                            const sp = r.total_marks>0?Math.round((r.obtained_marks/r.total_marks)*100):0;
-                            return (
-                              <tr key={r.id} className="border-b border-slate-50 hover:bg-slate-50">
-                                <td className="px-4 py-2.5 text-slate-700 font-medium">{r.subject_name}</td>
-                                <td className="px-4 py-2.5 text-center font-bold text-slate-700">{r.obtained_marks}</td>
-                                <td className="px-4 py-2.5 text-center text-slate-500">{r.total_marks}</td>
-                                <td className="px-4 py-2.5 text-center"><span className={sp>=40?'text-emerald-600 font-semibold':'text-red-500 font-semibold'}>{sp}%</span></td>
-                                <td className="px-4 py-2.5 text-center">
-                                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${r.pass_fail==='pass'?'bg-emerald-50 text-emerald-700':'bg-red-50 text-red-600'}`}>
-                                    {r.pass_fail?.toUpperCase()}
-                                  </span>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                    );
+                  })}
+                </div>
+              )
+            }
           </div>
         )}
 
@@ -1244,17 +1925,20 @@ export default function StudentProfiles() {
           </div>
         )}
 
-        {/* ── ID Card ──────────────────────────────────────────────────────────── */}
-        {activeTab === 'idcard' && (
-          <IDCardTab student={selectedStudent} schoolName={schoolName} cardYear={selectedYear} />
-        )}
-
         {/* ── Certificate ──────────────────────────────────────────────────────── */}
         {activeTab === 'certificate' && (
           <CertificateTab student={selectedStudent} schoolName={schoolName} />
         )}
 
       </div>
+
+      {/* Receipt Modal */}
+      {showReceipt && receiptData && (
+        <ReceiptPreview
+          data={receiptData}
+          onClose={() => setShowReceipt(false)}
+        />
+      )}
     </div>
   );
 }

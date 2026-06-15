@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSchool } from '../lib/schoolContext';
 import { APP_NAME, supabase } from '../lib/supabase';
-import { Save, School, Shield, Database, CheckCircle, CalendarOff, Plus, Trash2, BookOpen, ChevronDown, ClipboardList, Star } from 'lucide-react';
-
+import { Save, School, Shield, Database, CheckCircle, CalendarOff, Plus, Trash2, BookOpen, ChevronDown, ClipboardList, Star, Upload, X } from 'lucide-react';
+import SchoolSettingsLogoUpload from './SchoolSettingsLogoUpload';
 // ─── Types ────────────────────────────────────────────────────
 interface Holiday {
   id: string;
@@ -647,6 +647,183 @@ function GradeSystemSection({ schoolId }: { schoolId: string }) {
   );
 }
 
+// ─── Logo Upload Section ──────────────────────────────────────
+const BUCKET = 'school-assets';
+const LOGO_PATH = 'logo/school-logo';
+
+function LogoUploadSection({ schoolId }: { schoolId: string }) {
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [msgType, setMsgType] = useState<'success' | 'error'>('success');
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!schoolId) return;
+    supabase
+      .from('school_settings')
+      .select('logo_url')
+      .eq('school_id', schoolId)
+      .single()
+      .then(({ data }) => {
+        if (data?.logo_url) setLogoUrl(data.logo_url);
+      });
+  }, [schoolId]);
+
+  const showMsg = (text: string, type: 'success' | 'error' = 'success') => {
+    setMsg(text); setMsgType(type);
+    setTimeout(() => setMsg(''), 3500);
+  };
+
+  const validateFile = (file: File): string | null => {
+    if (!['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'].includes(file.type))
+      return 'Only PNG, JPG, WebP, or SVG files are allowed.';
+    if (file.size > 2 * 1024 * 1024) return 'File must be under 2 MB.';
+    return null;
+  };
+
+  const handleFile = useCallback(async (file: File) => {
+    const err = validateFile(file);
+    if (err) { showMsg(err, 'error'); return; }
+
+    const reader = new FileReader();
+    reader.onload = (e) => setPreview(e.target?.result as string);
+    reader.readAsDataURL(file);
+
+    setUploading(true);
+    try {
+      const ext = file.name.split('.').pop() || 'png';
+      const filePath = `${LOGO_PATH}.${ext}`;
+      const { error: uploadError } = await supabase.storage
+        .from(BUCKET).upload(filePath, file, { upsert: true, contentType: file.type });
+      if (uploadError) throw uploadError;
+
+      const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(filePath);
+      const publicUrl = `${urlData.publicUrl}?t=${Date.now()}`;
+
+      await supabase.from('school_settings')
+        .update({ logo_url: publicUrl })
+        .eq('school_id', schoolId);
+
+      setLogoUrl(publicUrl);
+      setPreview(null);
+      showMsg('Logo updated successfully!');
+    } catch (e) {
+      setPreview(null);
+      showMsg(e instanceof Error ? e.message : 'Upload failed. Please try again.', 'error');
+    } finally {
+      setUploading(false);
+    }
+  }, [schoolId]);
+
+  const handleRemove = async () => {
+    setRemoving(true);
+    await supabase.storage.from(BUCKET).remove(
+      ['png','jpg','jpeg','webp','svg'].map(ext => `${LOGO_PATH}.${ext}`)
+    );
+    await supabase.from('school_settings').update({ logo_url: null }).eq('school_id', schoolId);
+    setLogoUrl(null);
+    setPreview(null);
+    showMsg('Logo removed. Certificates will show the default seal.');
+    setRemoving(false);
+  };
+
+  const displayUrl = preview || logoUrl;
+
+  return (
+    <div className="card space-y-4">
+      <div className="flex items-center gap-2 mb-1">
+        <Upload className="w-4 h-4 text-blue-600" />
+        <h3 className="font-semibold text-slate-800">School Logo</h3>
+      </div>
+      <p className="text-sm text-slate-400">
+        Displayed at the top of every certificate. PNG, JPG, WebP or SVG · max 2 MB.
+      </p>
+
+      {/* Current logo + info */}
+      <div className="flex items-center gap-4">
+        <div className="w-20 h-20 rounded-full border-2 border-amber-400 overflow-hidden flex items-center justify-center bg-amber-50 flex-shrink-0 relative">
+          {displayUrl ? (
+            <img src={displayUrl} alt="School Logo" className="w-full h-full object-cover" />
+          ) : (
+            <School className="w-8 h-8 text-slate-300" />
+          )}
+          {uploading && (
+            <div className="absolute inset-0 bg-white/70 flex items-center justify-center">
+              <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          )}
+        </div>
+        <div className="space-y-1.5">
+          <p className="text-sm font-medium text-slate-700">
+            {logoUrl ? 'Current logo' : 'No logo uploaded'}
+          </p>
+          <p className="text-xs text-slate-400">
+            {logoUrl ? 'Upload a new image to replace it.' : 'Upload your school logo to display on certificates.'}
+          </p>
+          {logoUrl && (
+            <button
+              onClick={handleRemove}
+              disabled={removing}
+              className="btn-danger text-xs py-1"
+            >
+              <X className="w-3 h-3" />
+              {removing ? 'Removing…' : 'Remove Logo'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Drop zone */}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
+        onClick={() => !uploading && fileInputRef.current?.click()}
+        className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${
+          dragging ? 'border-amber-400 bg-amber-50' : 'border-slate-200 hover:border-blue-300 hover:bg-blue-50'
+        }`}
+      >
+        <Upload className="w-6 h-6 text-slate-300 mx-auto mb-2" />
+        <p className="text-sm font-medium text-slate-600">
+          {uploading ? 'Uploading…' : 'Drop image here, or click to browse'}
+        </p>
+        <p className="text-xs text-slate-400 mt-1">Square image recommended · circular crop on certificates</p>
+      </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/svg+xml"
+        className="hidden"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ''; }}
+      />
+
+      {msg && (
+        <div className={`flex items-center gap-2 text-sm font-medium p-3 rounded-lg ${
+          msgType === 'success'
+            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+            : 'bg-red-50 text-red-700 border border-red-200'
+        }`}>
+          {msgType === 'success' ? <CheckCircle className="w-4 h-4" /> : <X className="w-4 h-4" />}
+          {msg}
+        </div>
+      )}
+
+      <div className="bg-slate-50 rounded-xl p-3 text-xs text-slate-500 space-y-1">
+        <p className="font-semibold text-slate-600">💡 Tips for best results:</p>
+        <ul className="list-disc list-inside space-y-0.5">
+          <li>Use a square image (e.g. 400×400 px)</li>
+          <li>PNG with transparent background looks cleanest</li>
+          <li>Logo appears as an 80 px circle on all certificates</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Settings Page (fixed to always show sections) ──────
 export default function Settings() {
   const { settings, updateSettings } = useSchool();
@@ -763,9 +940,10 @@ export default function Settings() {
         )}
       </div>
 
-      {/* Attendance, Subjects, Exam Structure, Grade System – always shown when schoolId is available */}
+      {/* Logo Upload + other sections */}
       {activeSchoolId && (
         <>
+          <LogoUploadSection schoolId={activeSchoolId} />
           <AttendanceSettingsSection schoolId={activeSchoolId} />
           <SubjectsSettingsSection schoolId={activeSchoolId} />
           <ExamStructureSection schoolId={activeSchoolId} />

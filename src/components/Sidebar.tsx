@@ -1,17 +1,18 @@
 import {
   LayoutDashboard, Users, CreditCard, CalendarCheck,
   BarChart3, GraduationCap, Bell, Settings, ChevronRight,
-  School, ClipboardList, UserCircle,
+  School, UserCircle, FileText,
 } from 'lucide-react';
 import { APP_NAME } from '../lib/supabase';
 
-type Page = 'dashboard' | 'students' | 'profiles' | 'fees' | 'attendance' | 'reports' | 'classes' | 'announcements' | 'settings' | 'results';
+type Page = 'dashboard' | 'students' | 'profiles' | 'fees' | 'attendance' | 'results' | 'reports' | 'classes' | 'announcements' | 'settings' | 'certificates';
 
 interface SidebarProps {
   currentPage: Page;
   onNavigate: (page: Page) => void;
   isOpen: boolean;
   schoolName: string;
+  schoolLogo?: string | null;
 }
 
 const navItems = [
@@ -20,21 +21,28 @@ const navItems = [
   { id: 'profiles', label: 'Student Profiles', icon: UserCircle },
   { id: 'fees', label: 'Fee Management', icon: CreditCard },
   { id: 'attendance', label: 'Attendance', icon: CalendarCheck },
-  { id: 'results', label: 'Results', icon: ClipboardList },
+  { id: 'results', label: 'Results', icon: BarChart3 },
   { id: 'reports', label: 'Reports', icon: BarChart3 },
   { id: 'classes', label: 'Classes', icon: GraduationCap },
   { id: 'announcements', label: 'Notices', icon: Bell },
+  { id: 'certificates', label: 'Certificates', icon: FileText },
 ] as const;
 
-export default function Sidebar({ currentPage, onNavigate, isOpen, schoolName }: SidebarProps) {
+export default function Sidebar({ currentPage, onNavigate, isOpen, schoolName, schoolLogo }: SidebarProps) {
   return (
     <>
       {isOpen && <div className="fixed inset-0 bg-black/30 z-20 lg:hidden" />}
       <aside className={`fixed top-0 left-0 h-full w-64 bg-white border-r border-slate-100 z-30 flex flex-col transition-transform duration-300 shadow-xl lg:shadow-none lg:translate-x-0 ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="p-5 border-b border-slate-100">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-md">
-              <School className="w-5 h-5 text-white" />
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center shadow-md overflow-hidden bg-white">
+              {schoolLogo ? (
+                <img src={schoolLogo} alt="School Logo" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-md">
+                  <School className="w-5 h-5 text-white" />
+                </div>
+              )}
             </div>
             <div>
               <h1 className="font-bold text-slate-800 text-sm leading-tight">{schoolName}</h1>
