@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
+    "@yudiel/react-qr-scanner": "^2.6.0",
     "face-api.js": "^0.22.2",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",
@@ -19,7 +20,6 @@
     "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-qr-reader": "^3.0.0-beta-1",
     "status": "^0.0.13"
   },
   "devDependencies": {

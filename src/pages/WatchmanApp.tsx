@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import type { CSSProperties } from 'react';
-import { QrReader } from 'react-qr-reader';
+import { Scanner } from '@yudiel/react-qr-scanner';
 import * as faceapi from 'face-api.js';
 import { supabase } from '../lib/supabase';
 import { useSchool } from '../lib/schoolContext';
@@ -11,17 +10,6 @@ import {
 } from 'lucide-react';
 import WatchmanSidebar from '../components/WatchmanSidebar';
 
-// Same @types/react duplicate-version workaround as the QRCodeSVG cast in
-// StudentProfiles.tsx ("bigint is not assignable to ReactNode"). Run
-// `npm ls @types/react` if you want to fix the root cause instead.
-const QrScanner = QrReader as unknown as (props: {
-  constraints?: MediaTrackConstraints;
-  onResult: (result: any, error: any) => void;
-  containerStyle?: CSSProperties;
-  videoContainerStyle?: CSSProperties;
-  videoStyle?: CSSProperties;
-}) => JSX.Element;
-
 // ── Watchman Portal ──────────────────────────────────────────────────────────
 // Phase 5: Scan QR with confirmation step (spec §7.3).
 // Phase 6 (this update): Scan Face — auto-marks, no confirmation step, but
@@ -30,6 +18,10 @@ const QrScanner = QrReader as unknown as (props: {
 //   get marked present on its own.
 // Phase 7: Today's Attendance list (full page).
 // Phase 8: Proper WatchmanSidebar — the mode switcher below is a stand-in.
+//
+// Note: QR scanning migrated from react-qr-reader (React 16/17 only, caused
+// npm ERESOLVE conflicts on React 18) to @yudiel/react-qr-scanner, which is
+// actively maintained and has native React 18 types — no wrapper cast needed.
 
 interface WatchmanAppProps {
   user: { email?: string } | null;
@@ -205,11 +197,10 @@ export default function WatchmanApp({ user, onLogout }: WatchmanAppProps) {
   );
 
   // ── QR scan handler ──────────────────────────────────────────────────────
-  async function handleQRResult(scanResult: any, _error: any) {
+  // @yudiel/react-qr-scanner calls onScan with an array of detected codes,
+  // each with a `.rawValue` string. We only care about the first hit per frame.
+  async function handleQRResult(text: string | undefined) {
     if (pendingConfirmation || looking) return;
-    if (!scanResult) return; // react-qr-reader fires `error` on most no-code frames — that's normal
-
-    const text: string | undefined = scanResult.getText?.() ?? scanResult.text;
     if (!text || text === lastScannedTokenRef.current) return;
 
     let token: string | null = null;
@@ -582,12 +573,14 @@ export default function WatchmanApp({ user, onLogout }: WatchmanAppProps) {
             ) : (
               <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
                 <div className="relative aspect-square bg-slate-900">
-                  <QrScanner
+                  <Scanner
                     constraints={{ facingMode: 'environment' }}
-                    onResult={handleQRResult}
-                    containerStyle={{ width: '100%', height: '100%' }}
-                    videoContainerStyle={{ width: '100%', height: '100%', paddingTop: 0 }}
-                    videoStyle={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    onScan={(detectedCodes) => handleQRResult(detectedCodes[0]?.rawValue)}
+                    onError={(error) => console.error('QR scan error:', error)}
+                    styles={{
+                      container: { width: '100%', height: '100%' },
+                      video: { width: '100%', height: '100%', objectFit: 'cover' },
+                    }}
                   />
                   {looking && (
                     <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
