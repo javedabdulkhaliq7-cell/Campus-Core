@@ -12,20 +12,27 @@ import Classes from './pages/Classes';
 import Announcements from './pages/Announcements';
 import Settings from './pages/Settings';
 import Results from './pages/Results';
+import Billing from './pages/Billing';
 import Login from './pages/Login';
 import AdminLogin from './pages/AdminLogin';
 import AdminPanel from './pages/AdminPanel';
 import CertificateGenerator from './pages/CertificateGenerator';
+import Staff from './pages/Staff';
+import AdminMessages from './pages/AdminMessages';
+import TeacherApp from './pages/TeacherApp';
+import WatchmanApp from './pages/WatchmanApp';
+import ParentDashboard from './pages/ParentDashboard';
+import { parentSupabase } from './lib/parentSupabaseClient';
 import {
   Menu, X, School, LogOut, AlertTriangle, Clock, Smartphone,
-  CreditCard, CheckCircle, Loader
+  CreditCard, CheckCircle, Loader, RefreshCw, AlertCircle, Lock
 } from 'lucide-react';
 
 const isAdminRoute = window.location.pathname === '/admin';
 
 type Page =
   | 'dashboard' | 'students' | 'profiles' | 'fees' | 'attendance'
-  | 'reports' | 'classes' | 'announcements' | 'settings' | 'results' | 'certificates';
+  | 'reports' | 'classes' | 'announcements' | 'settings' | 'results' | 'certificates' | 'billing' | 'staff' | 'messages';
 
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: 'Principal Dashboard',
@@ -39,9 +46,128 @@ const PAGE_TITLES: Record<Page, string> = {
   settings: 'Settings',
   results: 'Exam Results',
   certificates: 'Certificate Generator',
+  billing: 'Billing & Subscription',
+  staff: 'Staff Management',
+  messages: 'Parent Messages',
 };
 
-// ── Payment Wall (blocked state) ────────────────────────────────
+// ── Payment Pending Wall ────────────────────────────────
+function PendingPaymentWall({ onVerified, onLogout }: { onVerified: () => void; onLogout: () => void }) {
+  const { subscription, refreshSubscription } = useSchool();
+  const [checking, setChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState<'verified' | 'still_pending' | null>(null);
+
+  const supportPhone = import.meta.env.VITE_SUPPORT_PHONE || '';
+
+  async function checkNow() {
+    setChecking(true);
+    setCheckResult(null);
+    await refreshSubscription();
+    // After refresh, check the latest subscription status
+    const { data: sub } = await supabase
+      .from('subscriptions')
+      .select('status')
+      .eq('id', subscription?.id)
+      .maybeSingle();
+
+    if (sub?.status === 'active') {
+      setCheckResult('verified');
+      setTimeout(() => onVerified(), 1500);
+    } else {
+      setCheckResult('still_pending');
+    }
+    setChecking(false);
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden">
+        {/* Header */}
+        <div className="bg-amber-500 px-6 py-5 text-white text-center">
+          <Clock className="w-8 h-8 mx-auto mb-2 opacity-90" />
+          <h2 className="text-lg font-bold">Payment Pending Verification</h2>
+          <p className="text-amber-100 text-sm mt-1">Your access will activate once payment is confirmed</p>
+        </div>
+
+        <div className="p-6 space-y-4">
+          {/* Info */}
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-2">
+            <p className="text-sm font-semibold text-blue-800 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" /> Your payment is being verified
+            </p>
+            <ul className="text-xs text-blue-700 space-y-1.5">
+              <li>• Verification happens automatically when our system receives the JazzCash/EasyPaisa SMS.</li>
+              <li>• This usually takes a few minutes after your payment goes through.</li>
+              <li>• If your payment hasn't been received yet, please send it now and check again.</li>
+              <li>• If you're having trouble, contact us using the number below.</li>
+            </ul>
+          </div>
+
+          {/* Subscription details */}
+          {subscription && (
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm space-y-2">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Plan</span>
+                <span className="font-semibold text-slate-800 capitalize">{subscription.plan}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Amount</span>
+                <span className="font-semibold text-slate-800">Rs. {subscription.amount?.toLocaleString()}/mo</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Status</span>
+                <span className="font-semibold text-amber-600">⏳ Awaiting Verification</span>
+              </div>
+            </div>
+          )}
+
+          {/* Check result feedback */}
+          {checkResult === 'verified' && (
+            <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-800 font-semibold text-center flex items-center justify-center gap-2">
+              <CheckCircle className="w-4 h-4" /> Payment verified! Entering dashboard...
+            </div>
+          )}
+          {checkResult === 'still_pending' && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800 text-center">
+              Not verified yet. Please wait a few minutes and try again.
+            </div>
+          )}
+
+          {/* Check Again */}
+          <button
+            onClick={checkNow}
+            disabled={checking || checkResult === 'verified'}
+            className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+          >
+            {checking
+              ? <><Loader className="w-4 h-4 animate-spin" /> Checking...</>
+              : <><RefreshCw className="w-4 h-4" /> Check Verification Status</>}
+          </button>
+
+          <button
+            onClick={onLogout}
+            className="w-full border border-slate-200 text-slate-600 hover:bg-slate-50 font-medium py-2.5 rounded-xl transition-colors text-sm"
+          >
+            Sign Out
+          </button>
+
+          <p className="text-center text-xs text-slate-400">
+            Need help? Call or WhatsApp:{' '}
+            <a
+              href={`https://wa.me/${supportPhone.replace(/\D/g, '')}`}
+              target="_blank" rel="noopener noreferrer"
+              className="font-semibold text-blue-500 hover:underline"
+            >
+              {supportPhone || 'Not configured'}
+            </a>
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Payment Wall (subscription expired) ─────────────────────────
 function PaymentWall({ onSubmitted }: { onSubmitted: () => void }) {
   const { schoolName, subscription } = useSchool();
   const [payMethod, setPayMethod] = useState<'jazzcash' | 'easypaisa'>('jazzcash');
@@ -56,9 +182,7 @@ function PaymentWall({ onSubmitted }: { onSubmitted: () => void }) {
     if (!payPhone || !txnId) { setError('Please fill in all fields.'); return; }
     setSubmitting(true);
     try {
-      // Get school_id from subscription
       if (!subscription) throw new Error('No subscription found.');
-
       const now = new Date();
       await supabase.from('payments').insert({
         school_id: subscription.school_id,
@@ -90,8 +214,7 @@ function PaymentWall({ onSubmitted }: { onSubmitted: () => void }) {
           </div>
           <h2 className="text-xl font-bold text-slate-800">Payment Submitted!</h2>
           <p className="text-slate-600 text-sm">
-            Our team will verify your payment shortly and activate your subscription.
-            You'll be notified once confirmed.
+            Your payment will be verified automatically. Access will restore once confirmed.
           </p>
           <p className="text-xs text-slate-400 animate-pulse">Please wait...</p>
         </div>
@@ -102,7 +225,6 @@ function PaymentWall({ onSubmitted }: { onSubmitted: () => void }) {
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden">
-        {/* Header */}
         <div className="bg-red-600 px-6 py-5 text-white text-center">
           <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-90" />
           <h2 className="text-lg font-bold">Subscription Expired</h2>
@@ -121,18 +243,14 @@ function PaymentWall({ onSubmitted }: { onSubmitted: () => void }) {
             </div>
           </div>
 
-          {/* Payment Method */}
           <div>
             <p className="text-sm font-semibold text-slate-700 mb-2">Pay via</p>
             <div className="flex gap-2">
               {(['jazzcash', 'easypaisa'] as const).map(m => (
-                <button
-                  key={m}
-                  onClick={() => setPayMethod(m)}
+                <button key={m} onClick={() => setPayMethod(m)}
                   className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 text-sm font-semibold transition-all ${
                     payMethod === m ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600'
-                  }`}
-                >
+                  }`}>
                   <Smartphone className="w-4 h-4" />
                   {m === 'jazzcash' ? 'JazzCash' : 'EasyPaisa'}
                 </button>
@@ -140,7 +258,6 @@ function PaymentWall({ onSubmitted }: { onSubmitted: () => void }) {
             </div>
           </div>
 
-          {/* Instructions */}
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm">
             <p className="font-semibold text-amber-800 mb-1.5 flex items-center gap-1.5">
               <CreditCard className="w-4 h-4" /> Send payment to:
@@ -155,16 +272,15 @@ function PaymentWall({ onSubmitted }: { onSubmitted: () => void }) {
             </p>
           </div>
 
-          {/* Auto-verify notice */}
           <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-start gap-2.5">
             <Clock className="w-4 h-4 text-blue-500 mt-0.5 shrink-0" />
             <p className="text-xs text-blue-700">
-              <span className="font-semibold">Auto-verified within 2 hours.</span> Submit your details below and your access will restore automatically. No need to wait for manual approval.
+              <span className="font-semibold">Auto-verified.</span> Submit your details and access restores automatically once payment is confirmed. No manual approval needed.
             </p>
           </div>
 
-          {/* Form */}
           {error && <p className="text-red-600 text-sm bg-red-50 border border-red-200 px-4 py-2 rounded-xl">{error}</p>}
+
           <div className="space-y-3">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Phone Number Used *</label>
@@ -186,7 +302,14 @@ function PaymentWall({ onSubmitted }: { onSubmitted: () => void }) {
           </button>
 
           <p className="text-center text-xs text-slate-400">
-            Need help? Contact support at support@campuscore.pk
+            Need help? Call or WhatsApp:{' '}
+            <a
+              href={`https://wa.me/${(import.meta.env.VITE_SUPPORT_PHONE || '').replace(/\D/g, '')}`}
+              target="_blank" rel="noopener noreferrer"
+              className="font-semibold text-blue-500 hover:underline"
+            >
+              {import.meta.env.VITE_SUPPORT_PHONE || 'Not configured'}
+            </a>
           </p>
         </div>
       </div>
@@ -194,32 +317,22 @@ function PaymentWall({ onSubmitted }: { onSubmitted: () => void }) {
   );
 }
 
-// ── Trial Banner ────────────────────────────────────────────────
-function TrialBanner() {
-  const { subscription, isOnTrial, trialDaysLeft } = useSchool();
-  const [dismissed, setDismissed] = useState(false);
-
-  if (dismissed) return null;
-  if (!subscription) return null;
-
-  // Show for trial or pending_payment during trial window
-  const showBanner = isOnTrial || subscription.status === 'pending_payment';
-  if (!showBanner) return null;
-
-  const isPending = subscription.status === 'pending_payment';
-
+// ── Locked Feature (shown during grace period for blocked pages) ──
+function LockedFeature({ featureName }: { featureName: string }) {
   return (
-    <div className={`flex items-center gap-3 px-4 py-2.5 text-sm ${isPending ? 'bg-amber-500' : 'bg-blue-600'} text-white`}>
-      <Clock className="w-4 h-4 shrink-0" />
-      <p className="flex-1 text-xs sm:text-sm">
-        {isPending
-          ? `Payment under review. Trial ends in ${trialDaysLeft} day${trialDaysLeft !== 1 ? 's' : ''}.`
-          : `Free trial — ${trialDaysLeft} day${trialDaysLeft !== 1 ? 's' : ''} remaining. Activate your subscription to keep access.`
-        }
-      </p>
-      <button onClick={() => setDismissed(true)} className="shrink-0 hover:opacity-70 transition-opacity">
-        <X className="w-4 h-4" />
-      </button>
+    <div className="min-h-[60vh] flex items-center justify-center p-4">
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm max-w-md w-full p-8 text-center space-y-4">
+        <div className="w-14 h-14 bg-amber-100 rounded-full flex items-center justify-center mx-auto">
+          <Lock className="w-7 h-7 text-amber-600" />
+        </div>
+        <h2 className="text-lg font-bold text-slate-800">{featureName} is locked</h2>
+        <p className="text-slate-500 text-sm">
+          Your subscription payment is overdue. Please renew now to regain access to {featureName.toLowerCase()} and other features.
+        </p>
+        <p className="text-xs text-slate-400">
+          Fees, Attendance, Classes, and Announcements remain available during this grace period.
+        </p>
+      </div>
     </div>
   );
 }
@@ -232,29 +345,69 @@ function AppContent() {
   const [user, setUser] = useState<{ email?: string } | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [paymentWallKey, setPaymentWallKey] = useState(0);
+  const [userRole, setUserRole] = useState<'admin' | 'teacher' | 'super_admin' | 'watchman' | null>(null);
+  const [userStatus, setUserStatus] = useState<'active' | 'inactive' | null>(null);
+  const [roleLoading, setRoleLoading] = useState(false);
+  const [unreadMessages, setUnreadMessages] = useState(0);
 
-  const { schoolName, schoolLogo, loading: schoolLoading, subscription, subscriptionLoading, isSubscriptionActive, refreshSubscription } = useSchool();
+  const { schoolName, schoolLogo, loading: schoolLoading, subscription, subscriptionLoading, refreshSubscription } = useSchool();
 
   useEffect(() => {
     supabase.auth.onAuthStateChange((_event, session) => {
       setIsAuthenticated(!!session);
       setUser(session?.user ?? null);
       setAuthLoading(false);
+      if (session?.user) {
+        fetchUserRole(session.user.id);
+      } else {
+        setUserRole(null);
+        setUserStatus(null);
+      }
     });
   }, []);
+
+  async function fetchUserRole(uid: string) {
+    setRoleLoading(true);
+    const { data } = await supabase
+      .from('school_members')
+      .select('role, status')
+      .eq('user_id', uid)
+      .maybeSingle();
+    setUserRole((data?.role as 'admin' | 'teacher' | 'super_admin' | 'watchman') ?? 'admin');
+    setUserStatus((data?.status as 'active' | 'inactive') ?? 'active');
+    setRoleLoading(false);
+  }
 
   function navigate(page: Page) {
     setCurrentPage(page);
     setSidebarOpen(false);
   }
 
+  useEffect(() => {
+    fetchUnreadMessages();
+  }, [currentPage]);
+
+  async function fetchUnreadMessages() {
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    if (!authUser) return;
+    const { count } = await supabase
+      .from('parent_teacher_messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('receiver_id', authUser.id)
+      .eq('is_read', false);
+    setUnreadMessages(count ?? 0);
+  }
+
   async function handleLogout() {
     await supabase.auth.signOut();
     setIsAuthenticated(false);
     setUser(null);
+    setUserRole(null);
+    setUserStatus(null);
   }
 
-  if (authLoading || schoolLoading) {
+  // Loading gate
+  if (authLoading || schoolLoading || subscriptionLoading || roleLoading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <div className="text-center">
@@ -271,41 +424,119 @@ function AppContent() {
     return <Login onLoginSuccess={() => setIsAuthenticated(true)} />;
   }
 
-  // Subscription enforcement: block on expired / suspended
-  if (!subscriptionLoading && subscription) {
-    const isBlocked =
-      subscription.status === 'expired' ||
-      subscription.status === 'suspended' ||
-      // pending_payment AND trial has expired
-      (subscription.status === 'pending_payment' &&
-        subscription.trial_ends_at &&
-        new Date(subscription.trial_ends_at) < new Date());
-
-    if (isBlocked) {
-      return (
-        <PaymentWall
-          key={paymentWallKey}
-          onSubmitted={() => {
-            refreshSubscription();
-            setPaymentWallKey(k => k + 1);
-          }}
-        />
-      );
-    }
+  // ── Inactive staff block (teacher / watchman) ────────────────
+  if ((userRole === 'teacher' || userRole === 'watchman') && userStatus === 'inactive') {
+    const roleLabel = userRole === 'watchman' ? 'watchman' : 'teacher';
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 max-w-md w-full p-8 text-center space-y-4">
+          <div className="w-14 h-14 bg-amber-100 rounded-full flex items-center justify-center mx-auto">
+            <Lock className="w-7 h-7 text-amber-600" />
+          </div>
+          <h2 className="text-lg font-bold text-slate-800">Your Account is Inactive</h2>
+          <p className="text-slate-500 text-sm">
+            Your {roleLabel} account has been deactivated. Please contact your school admin to restore access.
+          </p>
+          <button
+            onClick={handleLogout}
+            className="w-full bg-slate-800 hover:bg-slate-700 text-white font-semibold py-3 rounded-xl transition-colors"
+          >
+            Sign Out
+          </button>
+        </div>
+      </div>
+    );
   }
 
+  // ── Teacher portal ───────────────────────────────────────────
+  if (userRole === 'teacher') {
+    return <TeacherApp user={user} onLogout={handleLogout} />;
+  }
+
+  // ── Watchman portal ───────────────────────────────────────────
+  if (userRole === 'watchman') {
+    return <WatchmanApp user={user} onLogout={handleLogout} />;
+  }
+
+  // ── Subscription gates (admin only below) ───────────────────
+
+  // No subscription row at all (shouldn't normally happen)
+  if (!subscription) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8 text-center space-y-4">
+          <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto">
+            <AlertTriangle className="w-8 h-8 text-amber-600" />
+          </div>
+          <h2 className="text-xl font-bold text-slate-800">No Subscription Found</h2>
+          <p className="text-slate-600 text-sm">
+            Your account has no subscription record. Please contact support or register again.
+          </p>
+          <button onClick={handleLogout}
+            className="w-full bg-slate-800 text-white py-3 rounded-xl font-semibold hover:bg-slate-700 transition-colors">
+            Sign Out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Pending payment — show 72-hour waiting screen
+  if (subscription.status === 'pending_payment') {
+    return (
+      <PendingPaymentWall
+        onVerified={() => {
+          refreshSubscription();
+          setPaymentWallKey(k => k + 1);
+        }}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
+  // Expired or suspended — show payment wall to renew
+  if (subscription.status === 'expired' || subscription.status === 'suspended') {
+    return (
+      <PaymentWall
+        key={paymentWallKey}
+        onSubmitted={() => {
+          refreshSubscription();
+          setPaymentWallKey(k => k + 1);
+        }}
+      />
+    );
+  }
+
+  // Grace period — limited access, locked pages handled in the pages map below
+  const subStatus = subscription.status as string;
+  const isGracePeriod = subStatus === 'grace_period';
+  const graceDaysLeft = isGracePeriod && subscription.grace_period_started_at
+    ? Math.max(0, 3 - Math.floor((Date.now() - new Date(subscription.grace_period_started_at).getTime()) / (1000 * 60 * 60 * 24)))
+    : null;
+
+  // Days until expiry (for the 5-day pre-expiry warning banner)
+  const daysUntilExpiry = subscription.status === 'active' && subscription.current_period_end
+    ? Math.ceil((new Date(subscription.current_period_end).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+    : null;
+  const showExpiryWarning = daysUntilExpiry !== null && daysUntilExpiry <= 5 && daysUntilExpiry >= 0;
+
+  // ── Active or grace_period subscription — render full app ────
+  const LOCKED_PAGES: Page[] = ['students', 'profiles', 'results', 'certificates', 'reports'];
   const pages: Record<Page, JSX.Element> = {
     dashboard: <Dashboard navigateTo={(page) => navigate(page as Page)} />,
-    students: <Students />,
-    profiles: <StudentProfiles />,
+    students: isGracePeriod && LOCKED_PAGES.includes('students') ? <LockedFeature featureName="Student Management" /> : <Students />,
+    profiles: isGracePeriod && LOCKED_PAGES.includes('profiles') ? <LockedFeature featureName="Student Profiles" /> : <StudentProfiles />,
     fees: <Fees />,
     attendance: <Attendance />,
-    reports: <Reports />,
+    reports: isGracePeriod && LOCKED_PAGES.includes('reports') ? <LockedFeature featureName="Reports" /> : <Reports />,
     classes: <Classes />,
     announcements: <Announcements />,
     settings: <Settings />,
-    results: <Results />,
-    certificates: <CertificateGenerator />,
+    results: isGracePeriod && LOCKED_PAGES.includes('results') ? <LockedFeature featureName="Exam Results" /> : <Results />,
+    certificates: isGracePeriod && LOCKED_PAGES.includes('certificates') ? <LockedFeature featureName="Certificate Generator" /> : <CertificateGenerator />,
+    billing: <Billing />,
+    staff: <Staff />,
+    messages: <AdminMessages />,
   };
 
   return (
@@ -316,12 +547,11 @@ function AppContent() {
         isOpen={sidebarOpen}
         schoolName={schoolName}
         schoolLogo={schoolLogo}
+        billingNeedsAttention={showExpiryWarning || isGracePeriod}
+        unreadMessages={unreadMessages}
       />
 
       <div className="flex-1 lg:ml-64 min-w-0 flex flex-col">
-        {/* Trial / Pending Banner */}
-        <TrialBanner />
-
         <header className="sticky top-0 z-10 bg-white border-b border-slate-100 px-4 lg:px-6 py-3.5 flex items-center gap-4">
           <button className="lg:hidden p-1.5 hover:bg-slate-100 rounded-lg" onClick={() => setSidebarOpen(o => !o)}>
             {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -338,16 +568,15 @@ function AppContent() {
           </div>
           <h1 className="hidden lg:block font-semibold text-slate-700 text-sm">{PAGE_TITLES[currentPage]}</h1>
           <div className="ml-auto flex items-center gap-3">
-            {/* Subscription badge */}
             {subscription && (
               <span className={`hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold ${
                 subscription.status === 'active' ? 'bg-green-100 text-green-700' :
-                subscription.status === 'trial' || subscription.status === 'pending_payment' ? 'bg-amber-100 text-amber-700' :
+                subStatus === 'grace_period' ? 'bg-amber-100 text-amber-700' :
                 'bg-red-100 text-red-700'
               }`}>
                 {subscription.status === 'active' ? '● Active' :
-                 subscription.status === 'pending_payment' ? '● Pending' :
-                 subscription.status === 'trial' ? '● Trial' : '● Expired'}
+                 subStatus === 'grace_period' ? `● Grace Period (${graceDaysLeft}d left)` :
+                 '● ' + subscription.status}
               </span>
             )}
             <div className="hidden sm:flex flex-col items-end">
@@ -355,19 +584,100 @@ function AppContent() {
               <span className="text-xs text-slate-400">{user?.email?.split('@')[0] || 'Admin'}</span>
             </div>
             <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
-              {user?.email?.charAt(0).toUpperCase() || 'PR'}
+              {user?.email?.charAt(0).toUpperCase() || 'P'}
             </div>
-            <button onClick={handleLogout} className="p-1.5 hover:bg-slate-100 rounded-lg transition-colors text-slate-500 hover:text-red-600" title="Logout">
+            <button onClick={handleLogout}
+              className="p-1.5 hover:bg-slate-100 rounded-lg transition-colors text-slate-500 hover:text-red-600" title="Logout">
               <LogOut className="w-4 h-4" />
             </button>
           </div>
         </header>
+
+        {/* Pre-expiry warning banner (5 days before, still active) */}
+        {showExpiryWarning && (
+          <div className="bg-amber-50 border-b border-amber-200 px-4 lg:px-6 py-2.5 flex items-center gap-2.5 flex-wrap">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <p className="text-xs sm:text-sm text-amber-800 flex-1">
+              <span className="font-semibold">Subscription renewal due in {daysUntilExpiry} day{daysUntilExpiry !== 1 ? 's' : ''}.</span>
+              {' '}Please renew soon to avoid interruption.
+            </p>
+            <button
+              onClick={() => navigate('billing')}
+              className="text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded-lg transition-colors shrink-0"
+            >
+              Renew Now
+            </button>
+          </div>
+        )}
+
+        {/* Grace period warning banner */}
+        {isGracePeriod && (
+          <div className="bg-red-50 border-b border-red-200 px-4 lg:px-6 py-2.5 flex items-center gap-2.5 flex-wrap">
+            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+            <p className="text-xs sm:text-sm text-red-800 flex-1">
+              <span className="font-semibold">Payment overdue — {graceDaysLeft} day{graceDaysLeft !== 1 ? 's' : ''} left before access is blocked.</span>
+              {' '}Some features are already locked.
+            </p>
+            <button
+              onClick={() => navigate('billing')}
+              className="text-xs font-semibold bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg transition-colors shrink-0"
+            >
+              Renew Now
+            </button>
+          </div>
+        )}
 
         <main className="p-4 lg:p-6 flex-1">
           {pages[currentPage]}
         </main>
       </div>
     </div>
+  );
+}
+
+// ── Root Router ───────────────────────────────────────────────────
+// No separate parent URL anymore — Login.tsx now has a "Parent" option
+// right alongside Sign In / Register. This component just checks which
+// session exists (parent vs. staff) and renders accordingly. A parent
+// session lives on a totally separate Supabase client (parentSupabase),
+// so it can never collide with the staff session inside SchoolProvider.
+function RootRouter() {
+  const [parentSession, setParentSession] = useState<import('@supabase/supabase-js').Session | null>(null);
+  const [checkingParentSession, setCheckingParentSession] = useState(true);
+
+  useEffect(() => {
+    parentSupabase.auth.getSession().then(({ data }) => {
+      setParentSession(data.session);
+      setCheckingParentSession(false);
+    });
+    const { data: listener } = parentSupabase.auth.onAuthStateChange((_event, newSession) => {
+      setParentSession(newSession);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  if (checkingParentSession) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <p className="text-slate-500 text-sm">Loading…</p>
+      </div>
+    );
+  }
+
+  if (parentSession) {
+    return (
+      <ParentDashboard
+        onLogout={async () => {
+          await parentSupabase.auth.signOut();
+        }}
+      />
+    );
+  }
+
+  return (
+    <SchoolProvider>
+      <AppContent />
+    </SchoolProvider>
   );
 }
 
@@ -380,9 +690,5 @@ function AdminApp() {
 
 export default function App() {
   if (isAdminRoute) return <AdminApp />;
-  return (
-    <SchoolProvider>
-      <AppContent />
-    </SchoolProvider>
-  );
+  return <RootRouter />;
 }

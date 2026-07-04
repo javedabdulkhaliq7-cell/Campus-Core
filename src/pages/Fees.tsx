@@ -67,21 +67,30 @@ export default function Fees() {
     const { id: _id, created_at: _ca, updated_at: _ua, ...cleanForm } = payForm as any;
     const record = { ...cleanForm, school_id: schoolId, total_amount: total };
     let error;
+    let savedRecord: any = null;
     if (payEntry?.feeRecord?.id) {
-      ({ error } = await supabase.from('fee_records').update(record).eq('id', payEntry.feeRecord.id));
+      ({ data: savedRecord, error } = await supabase.from('fee_records').update(record).eq('id', payEntry.feeRecord.id).select().single());
     } else {
-      ({ error } = await supabase.from('fee_records').insert(record));
+      ({ data: savedRecord, error } = await supabase.from('fee_records').insert(record).select().single());
     }
     if (error) { setSaving(false); alert('Failed to save fee: ' + error.message); return; }
-    if (payEntry && record.status === 'Paid' && payEntry.student.parent_phone) {
-      setSmsStatus('Sending SMS...');
-      await sendSmsNotification(payEntry.student.parent_phone, payEntry.student.full_name, total, schoolName, selectedMonth, selectedYear);
-      setSmsStatus('SMS sent to ' + payEntry.student.parent_phone);
+    if (payEntry && record.status === 'Paid' && savedRecord) {
+      // Build the exact same receipt the "Receipt" button generates, using
+      // the just-saved values, and store it on the row — this is what makes
+      // the parent's copy identical rather than a recreated lookalike.
+      const receipt = await buildReceiptData({ ...payEntry, feeRecord: savedRecord });
+      await supabase.from('fee_records').update({ receipt_snapshot: receipt }).eq('id', savedRecord.id);
+
+      if (payEntry.student.parent_phone) {
+        setSmsStatus('Sending SMS...');
+        await sendSmsNotification(payEntry.student.parent_phone, payEntry.student.full_name, total, schoolName, selectedMonth, selectedYear);
+        setSmsStatus('SMS sent to ' + payEntry.student.parent_phone);
+      }
     }
     setSaving(false); setShowPayModal(false); fetchData();
   }
 
-  async function generateReceipt(entry: StudentFee) {
+  async function buildReceiptData(entry: StudentFee) {
     // Get school details
     const { data: schoolSettings } = await supabase
       .from('school_settings')
@@ -118,7 +127,7 @@ export default function Fees() {
     const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
     const receiptNumber = `RCT-${year}${month}-${random}`;
 
-    setReceiptData({
+    return {
       receiptNumber,
       schoolName: schoolSettings?.school_name || '',
       schoolLogo: schoolSettings?.logo_url || null,
@@ -138,9 +147,16 @@ export default function Fees() {
       paymentDate: entry.feeRecord?.payment_date || new Date().toISOString().split('T')[0],
       paymentMethod: entry.feeRecord?.payment_method || 'Cash',
       receivedBy: schoolSettings?.principal_name || 'Principal',
-    });
+    };
+  }
 
+  async function generateReceipt(entry: StudentFee) {
+    const data = await buildReceiptData(entry);
+    setReceiptData(data);
     setShowReceipt(true);
+    if (entry.feeRecord?.id) {
+      await supabase.from('fee_records').update({ receipt_snapshot: data }).eq('id', entry.feeRecord.id);
+    }
   }
 
   return (

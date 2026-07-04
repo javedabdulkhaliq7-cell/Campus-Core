@@ -1,11 +1,11 @@
 import {
   LayoutDashboard, Users, CreditCard, CalendarCheck,
   BarChart3, GraduationCap, Bell, Settings, ChevronRight,
-  School, UserCircle, FileText,
+  School, UserCircle, FileText, Wallet, UserCog, MessageSquare,
 } from 'lucide-react';
 import { APP_NAME } from '../lib/supabase';
 
-type Page = 'dashboard' | 'students' | 'profiles' | 'fees' | 'attendance' | 'results' | 'reports' | 'classes' | 'announcements' | 'settings' | 'certificates';
+type Page = 'dashboard' | 'students' | 'profiles' | 'fees' | 'attendance' | 'results' | 'reports' | 'classes' | 'announcements' | 'settings' | 'certificates' | 'billing' | 'staff' | 'messages';
 
 interface SidebarProps {
   currentPage: Page;
@@ -13,6 +13,8 @@ interface SidebarProps {
   isOpen: boolean;
   schoolName: string;
   schoolLogo?: string | null;
+  billingNeedsAttention?: boolean;
+  unreadMessages?: number;
 }
 
 const navItems = [
@@ -26,9 +28,11 @@ const navItems = [
   { id: 'classes', label: 'Classes', icon: GraduationCap },
   { id: 'announcements', label: 'Notices', icon: Bell },
   { id: 'certificates', label: 'Certificates', icon: FileText },
+  { id: 'staff', label: 'Staff', icon: UserCog },
+  { id: 'messages', label: 'Parent Messages', icon: MessageSquare },
 ] as const;
 
-export default function Sidebar({ currentPage, onNavigate, isOpen, schoolName, schoolLogo }: SidebarProps) {
+export default function Sidebar({ currentPage, onNavigate, isOpen, schoolName, schoolLogo, billingNeedsAttention, unreadMessages }: SidebarProps) {
   return (
     <>
       {isOpen && <div className="fixed inset-0 bg-black/30 z-20 lg:hidden" />}
@@ -58,11 +62,26 @@ export default function Sidebar({ currentPage, onNavigate, isOpen, schoolName, s
               className={`sidebar-link w-full ${currentPage === id ? 'active' : 'text-slate-600'}`}>
               <Icon className="w-4 h-4 flex-shrink-0" />
               <span className="flex-1 text-left">{label}</span>
-              {currentPage === id && <ChevronRight className="w-3.5 h-3.5 opacity-70" />}
+              {id === 'messages' && unreadMessages && unreadMessages > 0 ? (
+                <span className="w-5 h-5 rounded-full bg-red-500 text-white text-xs font-bold flex items-center justify-center shrink-0">
+                  {unreadMessages}
+                </span>
+              ) : currentPage === id ? (
+                <ChevronRight className="w-3.5 h-3.5 opacity-70" />
+              ) : null}
             </button>
           ))}
 
           <p className="px-4 pt-5 pb-1.5 text-xs font-semibold text-slate-400 uppercase tracking-widest">System</p>
+          <button onClick={() => onNavigate('billing')}
+            className={`sidebar-link w-full ${currentPage === 'billing' ? 'active' : 'text-slate-600'}`}>
+            <Wallet className="w-4 h-4 flex-shrink-0" />
+            <span className="flex-1 text-left">Billing</span>
+            {billingNeedsAttention && (
+              <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
+            )}
+            {currentPage === 'billing' && <ChevronRight className="w-3.5 h-3.5 opacity-70" />}
+          </button>
           <button onClick={() => onNavigate('settings')}
             className={`sidebar-link w-full ${currentPage === 'settings' ? 'active' : 'text-slate-600'}`}>
             <Settings className="w-4 h-4 flex-shrink-0" />

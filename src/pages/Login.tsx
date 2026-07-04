@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { supabase, APP_NAME } from '../lib/supabase';
-import { School, Eye, EyeOff, ChevronRight, ChevronLeft, Check, Loader, Smartphone, CreditCard, Clock } from 'lucide-react';
+import { parentSupabase, setRememberMe } from '../lib/parentSupabaseClient';
+import { School, Eye, EyeOff, ChevronRight, ChevronLeft, Check, Loader, Smartphone, CreditCard, Clock, AlertCircle, RefreshCw, Phone, KeyRound } from 'lucide-react';
 
 // ── Plan config ────────────────────────────────────────────────
 const PLANS = [
@@ -35,12 +36,12 @@ const PLANS = [
 
 interface Props { onLoginSuccess: () => void; }
 
-type Mode = 'signin' | 'register';
+type Mode = 'signin' | 'register' | 'parent';
 type Plan = 'basic' | 'standard' | 'premium';
 type PayMethod = 'jazzcash' | 'easypaisa';
 
 export default function Login({ onLoginSuccess }: Props) {
-  const [mode, setMode] = useState<Mode>('signin');
+  const [mode, setMode] = useState<Mode>('parent');
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-950 via-blue-900 to-slate-900 flex items-center justify-center p-4">
@@ -57,6 +58,12 @@ export default function Login({ onLoginSuccess }: Props) {
         {/* Mode Toggle */}
         <div className="flex bg-white/10 rounded-xl p-1 mb-6">
           <button
+            onClick={() => setMode('parent')}
+            className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all ${mode === 'parent' ? 'bg-white text-blue-900' : 'text-white/70 hover:text-white'}`}
+          >
+            Parent
+          </button>
+          <button
             onClick={() => setMode('signin')}
             className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all ${mode === 'signin' ? 'bg-white text-blue-900' : 'text-white/70 hover:text-white'}`}
           >
@@ -71,7 +78,9 @@ export default function Login({ onLoginSuccess }: Props) {
         </div>
 
         <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
-          {mode === 'signin' ? (
+          {mode === 'parent' ? (
+            <ParentLoginForm />
+          ) : mode === 'signin' ? (
             <SignInForm onSuccess={onLoginSuccess} />
           ) : (
             <RegisterWizard onSuccess={onLoginSuccess} />
@@ -143,12 +152,113 @@ function SignInForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
+// ── Parent Login Form ──────────────────────────────────────────
+// Note: this does NOT call any onSuccess prop. Setting the parentSupabase
+// session here is enough — the top-level RootRouter in App.tsx listens for
+// that session and automatically swaps the whole page to ParentDashboard.
+function ParentLoginForm() {
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [remember, setRemember] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  function handleCodeChange(value: string) {
+    setCode(value.replace(/\D/g, '').slice(0, 6));
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/parent-login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ phone, code }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Login failed.');
+
+      setRememberMe(remember);
+      const { error: sessionErr } = await parentSupabase.auth.setSession(data.session);
+      if (sessionErr) throw sessionErr;
+      // No navigation call needed — App.tsx's session listener takes it from here.
+    } catch (err: any) {
+      setError(err.message || 'Something went wrong. Please try again.');
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="p-8 space-y-5">
+      <div>
+        <h2 className="text-xl font-bold text-slate-800">Parent Login</h2>
+        <p className="text-slate-500 text-sm mt-1">View your child's attendance, fees, and results</p>
+      </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-xl">{error}</div>
+      )}
+
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-1.5">Father's Phone Number</label>
+        <div className="flex items-center gap-2 border border-slate-200 rounded-xl px-4 py-3 focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent">
+          <Phone className="w-4 h-4 text-slate-400" />
+          <input
+            type="tel" value={phone} onChange={e => { setPhone(e.target.value); setError(''); }}
+            className="flex-1 outline-none text-sm bg-transparent"
+            placeholder="0300-1234567" required autoFocus
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-1.5">Access Code</label>
+        <div className="flex items-center gap-2 border border-slate-200 rounded-xl px-4 py-3 focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent">
+          <KeyRound className="w-4 h-4 text-slate-400" />
+          <input
+            type="text" inputMode="numeric" value={code} onChange={e => { handleCodeChange(e.target.value); setError(''); }}
+            className="flex-1 outline-none text-sm bg-transparent tracking-widest font-mono"
+            placeholder="482915" required
+          />
+        </div>
+        <p className="text-xs text-slate-400 mt-1">Given to you by the school office.</p>
+      </div>
+
+      <label className="flex items-center gap-2 text-sm text-slate-600">
+        <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} className="rounded border-slate-300" />
+        Remember me on this device
+      </label>
+
+      <button
+        type="submit" disabled={loading}
+        className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+      >
+        {loading ? <><Loader className="w-4 h-4 animate-spin" /> Logging in...</> : 'Login'}
+      </button>
+    </form>
+  );
+}
+
 // ── Registration Wizard ────────────────────────────────────────
 function RegisterWizard({ onSuccess }: { onSuccess: () => void }) {
   const [step, setStep] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [confirmMessage, setConfirmMessage] = useState('');
+
+  // After registration — show pending screen
+  const [registeredPaymentId, setRegisteredPaymentId] = useState<string | null>(null);
+  const [registeredTxnId, setRegisteredTxnId] = useState('');
+  const [registeredPlan, setRegisteredPlan] = useState<Plan>('basic');
+  const [checkingPayment, setCheckingPayment] = useState(false);
+  const [checkResult, setCheckResult] = useState<'verified' | 'still_pending' | null>(null);
 
   // Step 1 fields
   const [schoolName, setSchoolName] = useState('');
@@ -171,7 +281,6 @@ function RegisterWizard({ onSuccess }: { onSuccess: () => void }) {
   const [payPhone, setPayPhone] = useState('');
   const [txnId, setTxnId] = useState('');
 
-  // Sync admin email from step 1
   function goStep2() {
     setError('');
     if (!schoolName || !principalName || !address || !phone || !email) {
@@ -195,114 +304,221 @@ function RegisterWizard({ onSuccess }: { onSuccess: () => void }) {
     setSubmitting(true);
 
     try {
-      // 1. Create auth user
-      const { data: authData, error: authErr } = await supabase.auth.signUp({
+      // ── Call the edge function — does EVERYTHING server-side with the   ──
+      // ── service role key, so there's no RLS race condition possible.    ──
+      // ── If any step fails server-side, it rolls back everything itself.──
+      const { data, error: fnError } = await supabase.functions.invoke('register-school', {
+        body: {
+          schoolName, principalName, address, phone, regNumber,
+          fullName, adminEmail, password,
+          selectedPlan, payMethod, payPhone, txnId,
+        },
+      });
+
+      if (fnError) {
+        // Try to surface the specific error message returned by the function
+        let message = fnError.message || 'Registration failed. Please try again.';
+        try {
+          const ctx = (fnError as any).context;
+          if (ctx) {
+            const parsed = typeof ctx === 'string' ? JSON.parse(ctx) : await ctx.json?.();
+            if (parsed?.error) message = parsed.error;
+          }
+        } catch { /* fall back to default message */ }
+        throw new Error(message);
+      }
+
+      if (!data?.success) {
+        throw new Error(data?.error || 'Registration failed. Please try again.');
+      }
+
+      const paymentId = data.paymentId;
+
+      // ── Now sign in as the newly created admin (server already made the user) ──
+      const { error: signInErr } = await supabase.auth.signInWithPassword({
         email: adminEmail,
         password,
-        options: { data: { full_name: fullName } },
       });
-      if (authErr) throw new Error(authErr.message);
-      const userId = authData.user?.id;
-      if (!userId) throw new Error('Failed to create user account.');
+      if (signInErr) throw new Error('Account created but could not sign in: ' + signInErr.message);
 
-      // 2. Create school
-      const { data: schoolData, error: schoolErr } = await supabase
-        .from('schools')
-        .insert({ name: schoolName })
-        .select()
-        .single();
-      if (schoolErr) throw new Error(schoolErr.message);
-      const schoolId = schoolData.id;
+      // ── 10-second confirming window ──────────────────────────
+      setSubmitting(false);
+      setConfirming(true);
 
-      // 3. Add member
-      const { error: memberErr } = await supabase
-        .from('school_members')
-        .insert({ user_id: userId, school_id: schoolId, role: 'admin' });
-      if (memberErr) throw new Error(memberErr.message);
+      const messages = [
+        'Confirming payment details...',
+        'Checking transaction record...',
+        'Validating amount...',
+        'Contacting payment network...',
+        'Almost there...',
+      ];
 
-      // 4. School settings
-      await supabase.from('school_settings').insert({
-        school_id: schoolId,
-        school_name: schoolName,
-        principal_name: principalName,
-        address,
-        phone,
-        email: adminEmail,
-        website: '',
-        registration_number: regNumber,
-        weekly_off_days: [0], // Sunday off by default
-      });
+      let paymentVerified = false;
 
-      // 5. Subscription — trial for 14 days
-      const plan = PLANS.find(p => p.key === selectedPlan)!;
-      const trialEnd = new Date();
-      trialEnd.setDate(trialEnd.getDate() + 14);
+      for (let i = 0; i < messages.length; i++) {
+        setConfirmMessage(messages[i]);
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
-      const { data: subData, error: subErr } = await supabase
-        .from('subscriptions')
-        .insert({
-          school_id: schoolId,
-          plan: selectedPlan,
-          status: 'pending_payment',
-          student_limit: plan.student_limit,
-          amount: plan.amount,
-          trial_ends_at: trialEnd.toISOString(),
-        })
-        .select()
-        .single();
-      if (subErr) throw new Error(subErr.message);
+        const { data: checkPayment } = await supabase
+          .from('payments')
+          .select('status')
+          .eq('id', paymentId)
+          .maybeSingle();
 
-      // 6. Payment record
-      const now = new Date();
-      await supabase.from('payments').insert({
-        school_id: schoolId,
-        subscription_id: subData.id,
-        amount: plan.amount,
-        method: payMethod,
-        transaction_id: txnId,
-        phone_number: payPhone,
-        status: 'pending',
-        payment_month: now.getMonth() + 1,
-        payment_year: now.getFullYear(),
-        paid_at: now.toISOString(),
-      });
+        if (checkPayment?.status === 'verified') {
+          paymentVerified = true;
+          setConfirmMessage('Payment verified! ✅');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          break;
+        }
+      }
 
-      setSuccess(true);
+      setConfirming(false);
 
-      // Auto sign-in then redirect after 3s
-      await supabase.auth.signInWithPassword({ email: adminEmail, password });
-      setTimeout(() => onSuccess(), 3000);
+      if (paymentVerified) {
+        // Instantly verified — go straight into the app
+        setTimeout(() => onSuccess(), 1500);
+      } else {
+        // Not verified in 10s — show the pending waiting screen
+        setRegisteredPaymentId(paymentId);
+        setRegisteredTxnId(txnId);
+        setRegisteredPlan(selectedPlan);
+      }
+
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Registration failed. Please try again.');
-    } finally {
       setSubmitting(false);
+      setConfirming(false);
     }
   }
 
-  if (success) {
-    const plan = PLANS.find(p => p.key === selectedPlan)!;
-    const trialEnd = new Date();
-    trialEnd.setDate(trialEnd.getDate() + 14);
+  // Manual "Check Again" button on the pending screen
+  async function checkPaymentNow() {
+    if (!registeredPaymentId) return;
+    setCheckingPayment(true);
+    setCheckResult(null);
+    const { data } = await supabase
+      .from('payments')
+      .select('status')
+      .eq('id', registeredPaymentId)
+      .maybeSingle();
+    if (data?.status === 'verified') {
+      setCheckResult('verified');
+      setTimeout(() => onSuccess(), 2000);
+    } else {
+      setCheckResult('still_pending');
+    }
+    setCheckingPayment(false);
+  }
+
+  // ── Confirming screen ──────────────────────────────────────
+  if (confirming) {
     return (
-      <div className="p-8 text-center space-y-4">
-        <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto">
-          <Check className="w-8 h-8 text-green-600" />
+      <div className="p-12 text-center space-y-6">
+        <div className="relative w-20 h-20 mx-auto">
+          <div className="absolute inset-0 border-4 border-blue-100 rounded-full" />
+          <div className="absolute inset-0 border-4 border-blue-600 rounded-full border-t-transparent animate-spin" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <CreditCard className="w-7 h-7 text-blue-600" />
+          </div>
         </div>
-        <h2 className="text-xl font-bold text-slate-800">Registration Submitted!</h2>
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-left space-y-2">
-          <p className="text-sm text-blue-800 font-semibold">🎉 Your 14-day free trial starts now</p>
-          <p className="text-sm text-blue-700">Trial ends: <strong>{trialEnd.toLocaleDateString()}</strong></p>
-          <p className="text-sm text-blue-700">Plan: <strong>{plan.label} — Rs. {plan.amount.toLocaleString()}/mo</strong></p>
+        <div>
+          <h2 className="text-lg font-bold text-slate-800">Confirming Payment</h2>
+          <p className="text-slate-500 text-sm mt-2 transition-all">{confirmMessage}</p>
         </div>
-        <p className="text-sm text-slate-600">
-          Your payment is being verified by our team. You'll get full access once confirmed.
-          During your trial, all features are available.
-        </p>
-        <p className="text-xs text-slate-400 animate-pulse">Redirecting to dashboard...</p>
+        <div className="flex justify-center gap-1.5">
+          {[0, 1, 2].map(i => (
+            <span key={i} className="w-2 h-2 bg-blue-400 rounded-full animate-pulse" style={{ animationDelay: `${i * 0.2}s` }} />
+          ))}
+        </div>
+        <p className="text-xs text-slate-400">Please don't close this window</p>
       </div>
     );
   }
 
+  // ── Payment Pending screen ─────────────────────────────────
+  if (registeredPaymentId) {
+    const planInfo = PLANS.find(p => p.key === registeredPlan)!;
+    return (
+      <div className="p-8 space-y-5">
+        {/* Header */}
+        <div className="text-center space-y-3">
+          <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto">
+            <Clock className="w-8 h-8 text-amber-600" />
+          </div>
+          <h2 className="text-xl font-bold text-slate-800">Payment Pending Verification</h2>
+          <p className="text-slate-500 text-sm">
+            Your registration is complete. We're waiting to confirm your payment via our automated system.
+          </p>
+        </div>
+
+        {/* Payment details box */}
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2 text-sm">
+          <div className="flex justify-between">
+            <span className="text-slate-500">Transaction ID</span>
+            <span className="font-mono font-semibold text-slate-800">{registeredTxnId}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-500">Plan</span>
+            <span className="font-semibold text-slate-800 capitalize">{planInfo.label} — Rs. {planInfo.amount.toLocaleString()}/mo</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-500">Status</span>
+            <span className="font-semibold text-amber-600">⏳ Awaiting Verification</span>
+          </div>
+        </div>
+
+        {/* Info box */}
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-2">
+          <p className="text-sm font-semibold text-blue-800 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0" /> What happens next?
+          </p>
+          <ul className="text-xs text-blue-700 space-y-1.5">
+            <li>• Your payment is verified automatically when our system receives the JazzCash/EasyPaisa confirmation SMS.</li>
+            <li>• This usually happens within a few minutes if the payment went through.</li>
+            <li>• Once verified, you can sign in and access Campus Core immediately.</li>
+            <li>• If you're having trouble, contact us using the number below.</li>
+          </ul>
+        </div>
+
+        {/* Check result feedback */}
+        {checkResult === 'verified' && (
+          <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-800 font-semibold text-center">
+            ✅ Payment verified! Redirecting to dashboard...
+          </div>
+        )}
+        {checkResult === 'still_pending' && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800 text-center">
+            Payment not verified yet. Please wait a few minutes and try again.
+          </div>
+        )}
+
+        {/* Check Again button */}
+        <button
+          onClick={checkPaymentNow}
+          disabled={checkingPayment || checkResult === 'verified'}
+          className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+        >
+          {checkingPayment
+            ? <><Loader className="w-4 h-4 animate-spin" /> Checking...</>
+            : <><RefreshCw className="w-4 h-4" /> Check Verification Status</>}
+        </button>
+
+        <p className="text-center text-xs text-slate-400">
+          Need help? Call or WhatsApp:{' '}
+          <a
+            href={`https://wa.me/${(import.meta.env.VITE_SUPPORT_PHONE || '').replace(/\D/g, '')}`}
+            target="_blank" rel="noopener noreferrer"
+            className="font-semibold text-blue-500 hover:underline"
+          >
+            {import.meta.env.VITE_SUPPORT_PHONE || 'Not configured'}
+          </a>
+        </p>
+      </div>
+    );
+  }
+
+  // ── Wizard steps ───────────────────────────────────────────
   return (
     <div>
       {/* Step Indicator */}
@@ -437,7 +653,7 @@ function RegisterWizard({ onSuccess }: { onSuccess: () => void }) {
           <div className="space-y-5">
             <div>
               <h2 className="text-lg font-bold text-slate-800">Choose Plan & Pay</h2>
-              <p className="text-slate-500 text-sm">14-day free trial on all plans · Cancel anytime</p>
+              <p className="text-slate-500 text-sm">Access is granted after payment verification</p>
             </div>
 
             {/* Plan Cards */}
@@ -512,7 +728,7 @@ function RegisterWizard({ onSuccess }: { onSuccess: () => void }) {
                       : (import.meta.env.VITE_EASYPAISA_NUMBER || 'Not configured')}
                   </p>
                   <p className="text-amber-600">Account Name: <strong>{import.meta.env.VITE_PAYMENT_ACCOUNT_NAME || 'Campus Core'}</strong></p>
-                  <p className="mt-2 text-amber-600">After sending, enter your details below. Your payment will be <strong>auto-verified within 2 hours</strong>.</p>
+                  <p className="mt-2 text-amber-600">After sending, enter your details below. Your payment will be <strong>auto-verified</strong> once our system receives the confirmation SMS.</p>
                 </div>
               </div>
 
@@ -520,8 +736,8 @@ function RegisterWizard({ onSuccess }: { onSuccess: () => void }) {
               <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-start gap-2.5">
                 <Clock className="w-4 h-4 text-blue-500 mt-0.5 shrink-0" />
                 <div className="text-xs text-blue-700">
-                  <p className="font-semibold">Auto-verification in 2 hours</p>
-                  <p className="mt-0.5">Your access activates automatically after verification. No waiting for manual approval — you can start using Campus Core immediately on your 14-day trial.</p>
+                  <p className="font-semibold">Automatic verification</p>
+                  <p className="mt-0.5">Your access activates automatically once we receive your payment confirmation. No manual approval needed.</p>
                 </div>
               </div>
 

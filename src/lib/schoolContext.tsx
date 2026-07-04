@@ -59,50 +59,73 @@ export function SchoolProvider({ children }: { children: React.ReactNode }) {
   const [subscriptionLoading, setSubscriptionLoading] = useState(true);
 
   // ── Fetch school + settings ──────────────────────────────────
-  const fetchSchoolData = useCallback(async () => {
+  const fetchSchoolData = useCallback(async (retryCount = 0) => {
+    if (retryCount === 0) setLoading(true);
+
     try {
-      setLoading(true);
-
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!user) { setLoading(false); return; }
 
+      // Use maybeSingle() instead of single() — single() throws a 406
+      // when there are 0 rows, which happens right after registration
+      // before the school_members row has replicated.
       const { data: member } = await supabase
         .from('school_members')
         .select('school_id')
         .eq('user_id', user.id)
-        .single();
+        .maybeSingle();
 
-      if (!member) return;
+      if (!member) {
+        if (retryCount < 6) {
+          setTimeout(() => fetchSchoolData(retryCount + 1), 1000);
+        } else {
+          setLoading(false);
+        }
+        return;
+      }
 
       const [{ data: schoolData }, { data: settingsData }] = await Promise.all([
-        supabase.from('schools').select('id, name').eq('id', member.school_id).single(),
-        supabase.from('school_settings').select('*').eq('school_id', member.school_id).single(),
+        supabase.from('schools').select('id, name').eq('id', member.school_id).maybeSingle(),
+        supabase.from('school_settings').select('*').eq('school_id', member.school_id).maybeSingle(),
       ]);
 
       if (schoolData) setSchool(schoolData);
       if (settingsData) setSettings(settingsData);
+      setLoading(false);
     } catch (err) {
       console.error('Error fetching school data:', err);
-    } finally {
       setLoading(false);
     }
   }, []);
 
   // ── Fetch subscription ───────────────────────────────────────
-  const fetchSubscription = useCallback(async () => {
-    try {
-      setSubscriptionLoading(true);
+  // IMPORTANT: subscriptionLoading stays TRUE across retries so the UI
+  // never flashes a "no subscription" error while we're still trying.
+  // It only goes to FALSE once we have a definitive answer (found, or
+  // genuinely exhausted all retries).
+  const fetchSubscription = useCallback(async (retryCount = 0) => {
+    if (retryCount === 0) setSubscriptionLoading(true);
 
+    try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!user) { setSubscriptionLoading(false); return; }
 
       const { data: member } = await supabase
         .from('school_members')
         .select('school_id')
         .eq('user_id', user.id)
-        .single();
+        .maybeSingle();
 
-      if (!member) return;
+      // If member not found yet (just registered, replication delay),
+      // retry up to 6 times with increasing delay — keep loading=true.
+      if (!member) {
+        if (retryCount < 6) {
+          setTimeout(() => fetchSubscription(retryCount + 1), 1000);
+        } else {
+          setSubscriptionLoading(false); // genuinely give up after ~6s
+        }
+        return;
+      }
 
       const { data: sub } = await supabase
         .from('subscriptions')
@@ -110,12 +133,22 @@ export function SchoolProvider({ children }: { children: React.ReactNode }) {
         .eq('school_id', member.school_id)
         .order('created_at', { ascending: false })
         .limit(1)
-        .single();
+        .maybeSingle();
 
-      if (sub) setSubscription(sub);
+      // Subscription row not created yet either — retry same as above
+      if (!sub) {
+        if (retryCount < 6) {
+          setTimeout(() => fetchSubscription(retryCount + 1), 1000);
+        } else {
+          setSubscriptionLoading(false);
+        }
+        return;
+      }
+
+      setSubscription(sub);
+      setSubscriptionLoading(false);
     } catch (err) {
       console.error('Error fetching subscription:', err);
-    } finally {
       setSubscriptionLoading(false);
     }
   }, []);

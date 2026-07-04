@@ -1,10 +1,88 @@
 // ─── certificate.types.ts ───────────────────────────────────────────────────
 
+import React from "react";
+
 export interface SchoolSettings {
   school_name: string;
   principal_name: string;
   logo_url: string | null;
 }
+
+// ─── Certificate visual templates ────────────────────────────────────────────
+// 5 presets a principal can choose from; chosen one is saved per-school and
+// applied to every certificate type rendered/printed/downloaded.
+
+export interface CertTheme {
+  id: string;
+  name: string;
+  ornaments: boolean;          // corner flourishes on/off
+  bg: string;
+  borderOuter: string;
+  borderInner: string;
+  ornamentDark: string;
+  ornamentLight: string;
+  headingFont: string;          // school name / title / signature labels
+  bodyFont: string;             // certificate body text
+  schoolNameColor: string;
+  titleColor: string;           // certificate subtitle e.g. "CHARACTER CERTIFICATE"
+  textColor: string;            // body paragraph
+  mutedColor: string;           // cert no / date / principal name
+  logoBorder: string;
+  sealRingColor: string;        // fallback seal outer ring
+  sealBuildingColor: string;    // fallback seal silhouette
+}
+
+export const CERT_TEMPLATES: CertTheme[] = [
+  {
+    id: "gold_classic", name: "Gold Classic", ornaments: true,
+    bg: "#FEFCF3", borderOuter: "#8B6914", borderInner: "#C5973A",
+    ornamentDark: "#8B6914", ornamentLight: "#C5973A",
+    headingFont: "'Cinzel', serif", bodyFont: "'Cormorant Garamond', Georgia, serif",
+    schoolNameColor: "#1B3A6B", titleColor: "#5C1010", textColor: "#1A1008", mutedColor: "#5A4A2A",
+    logoBorder: "#C5973A", sealRingColor: "#8B6914", sealBuildingColor: "#1B3A6B",
+  },
+  {
+    id: "navy_modern", name: "Navy Modern", ornaments: false,
+    bg: "#FFFFFF", borderOuter: "#1B3A6B", borderInner: "#9DB6DD",
+    ornamentDark: "#1B3A6B", ornamentLight: "#9DB6DD",
+    headingFont: "'Poppins', sans-serif", bodyFont: "'Inter', Arial, sans-serif",
+    schoolNameColor: "#0F2A52", titleColor: "#1B3A6B", textColor: "#1E293B", mutedColor: "#64748B",
+    logoBorder: "#9DB6DD", sealRingColor: "#1B3A6B", sealBuildingColor: "#1B3A6B",
+  },
+  {
+    id: "minimal_mono", name: "Minimal Mono", ornaments: false,
+    bg: "#FFFFFF", borderOuter: "#1E293B", borderInner: "#CBD5E1",
+    ornamentDark: "#1E293B", ornamentLight: "#94A3B8",
+    headingFont: "'Inter', Arial, sans-serif", bodyFont: "'Inter', Arial, sans-serif",
+    schoolNameColor: "#0F172A", titleColor: "#0F172A", textColor: "#1E293B", mutedColor: "#64748B",
+    logoBorder: "#E2E8F0", sealRingColor: "#1E293B", sealBuildingColor: "#1E293B",
+  },
+  {
+    id: "maroon_heritage", name: "Maroon Heritage", ornaments: true,
+    bg: "#FCF8F4", borderOuter: "#6B1414", borderInner: "#B08850",
+    ornamentDark: "#6B1414", ornamentLight: "#B08850",
+    headingFont: "'Cinzel', serif", bodyFont: "'Cormorant Garamond', Georgia, serif",
+    schoolNameColor: "#6B1414", titleColor: "#6B1414", textColor: "#241412", mutedColor: "#6B4A3A",
+    logoBorder: "#B08850", sealRingColor: "#6B1414", sealBuildingColor: "#6B1414",
+  },
+  {
+    id: "emerald_elegant", name: "Emerald Elegant", ornaments: true,
+    bg: "#F7FBF8", borderOuter: "#0F4C3A", borderInner: "#C5973A",
+    ornamentDark: "#0F4C3A", ornamentLight: "#C5973A",
+    headingFont: "'Cinzel', serif", bodyFont: "'Cormorant Garamond', Georgia, serif",
+    schoolNameColor: "#0F4C3A", titleColor: "#0F4C3A", textColor: "#142420", mutedColor: "#3F5A50",
+    logoBorder: "#C5973A", sealRingColor: "#0F4C3A", sealBuildingColor: "#0F4C3A",
+  },
+];
+
+export function getCertTemplate(id: string | undefined | null): CertTheme {
+  return CERT_TEMPLATES.find((t) => t.id === id) ?? CERT_TEMPLATES[0];
+}
+
+// Lets the <S> accent-underline component (used inside every certificate's
+// bodyTemplate) pick up the active theme's color without threading a theme
+// prop through all 11 certificate definitions individually.
+export const CertThemeContext = React.createContext<CertTheme>(CERT_TEMPLATES[0]);
 
 // ─── Field definitions ────────────────────────────────────────────────────────
 
@@ -101,16 +179,15 @@ export function formatDisplayDate(iso: string): string {
   });
 }
 
-// ─── Strong span with gold underline ─────────────────────────────────────────
-
-import React from "react";
+// ─── Strong span with theme-colored underline ────────────────────────────────
 
 export function S({ children }: { children: React.ReactNode }) {
+  const theme = React.useContext(CertThemeContext);
   return (
     <strong
       style={{
         fontWeight: 700,
-        borderBottom: "1.5px solid #C5973A",
+        borderBottom: `1.5px solid ${theme.borderInner}`,
         paddingBottom: "1px",
       }}
     >

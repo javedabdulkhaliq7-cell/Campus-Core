@@ -7,7 +7,16 @@ import {
   CheckCircle, AlertCircle, Clock, MinusCircle,
   ChevronDown, Camera, FileText, Upload, Trash2,
   BookOpen, FileUp, ScrollText, Loader,
+  QrCode, RefreshCw, Smile, KeyRound,
 } from 'lucide-react';
+// npm install qrcode.react — modern versions (v3+) export QRCodeSVG (named), not a default export.
+import { QRCodeSVG } from 'qrcode.react';
+// Workaround: if your project has two copies of @types/react installed (a common
+// dependency-tree dedup issue), TS can report "bigint is not assignable to ReactNode"
+// and refuse to treat QRCodeSVG as a valid JSX component. This cast sidesteps that
+// without touching node_modules. The real fix is deduping @types/react — run
+// `npm ls @types/react` to confirm there's only one version resolved.
+const QRCode = QRCodeSVG as unknown as (props: { value: string; size?: number }) => JSX.Element;
 import {
   CERTIFICATE_DEFINITIONS,
   CertificateData,
@@ -38,6 +47,10 @@ interface Student {
   current_section?: string;
   class_id?: string;
   photo_url?: string;
+  attendance_token?: string;
+  reference_photo_url?: string;
+  parent_access_code?: string;
+  parent_code_sent?: boolean;
 }
 
 interface FeeRecord {
@@ -79,7 +92,7 @@ interface StudentDoc {
   uploaded_at: string;
 }
 
-type Tab = 'profile' | 'fees' | 'attendance' | 'results' | 'documents' | 'certificate';
+type Tab = 'profile' | 'fees' | 'attendance' | 'results' | 'documents' | 'certificate' | 'attendance_qr' | 'face_id' | 'parent_access';
 
 // Raw attendance record per day (fetched from DB)
 interface AttendanceRecord {
@@ -177,6 +190,15 @@ function printHTML(html: string, title = 'Print') {
   setTimeout(() => { win.print(); }, 400);
 }
 
+// Returns an <img> tag for the student's photo, or an initial-letter avatar if none is set
+function studentPhotoHtml(student: Student, size = 64, radius = 12) {
+  if (student.photo_url) {
+    return `<img src="${student.photo_url}" style="width:${size}px;height:${size}px;border-radius:${radius}px;object-fit:cover;border:2px solid #e2e8f0;flex-shrink:0;" />`;
+  }
+  const initial = (student.full_name || '?').charAt(0).toUpperCase();
+  return `<div style="width:${size}px;height:${size}px;border-radius:${radius}px;background:#1d4ed8;color:white;display:flex;align-items:center;justify-content:center;font-size:${Math.round(size*0.4)}px;font-weight:700;flex-shrink:0;">${initial}</div>`;
+}
+
 // ── Print Results — professional result card document ─────────────────────────
 
 type ExamGroupEntry = [string, { label: string; rows: Result[]; sortOrder: number }];
@@ -259,7 +281,9 @@ function printResults(groups: ExamGroupEntry[], student: Student, schoolName: st
       </div>
 
       <!-- Student info row -->
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;">
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;">
+        ${studentPhotoHtml(student, 60, 10)}
+        <div style="flex:1;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;">
         ${[
           ['Student Name', student.full_name],
           ["Father's Name", student.father_name??'—'],
@@ -272,6 +296,7 @@ function printResults(groups: ExamGroupEntry[], student: Student, schoolName: st
             <p style="font-size:9px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px;">${l}</p>
             <p style="font-size:12px;font-weight:600;color:#1e293b;">${v}</p>
           </div>`).join('')}
+        </div>
       </div>
 
       <!-- Exam groups -->
@@ -386,7 +411,8 @@ function printAttendanceHistory(student: Student, attendance: AttendanceSummary[
         .school-logo { width: 60px; height: 60px; border-radius: 50%; object-fit: cover; margin-bottom: 8px; }
         .school-logo-placeholder { width: 60px; height: 60px; background: #1d4ed8; border-radius: 50%; margin: 0 auto 8px; }
         .school-name { font-size: 20px; font-weight: 800; color: #0f172a; }
-        .student-info { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; background: #f8fafc; border-radius: 12px; padding: 12px 16px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
+        .student-info { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; background: #f8fafc; border-radius: 12px; padding: 12px 16px; border: 1px solid #e2e8f0; flex: 1; }
+        .student-info-row { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
         .info-label { font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
         .info-value { font-size: 13px; font-weight: 600; color: #1e293b; margin-top: 2px; }
         .summary-bar { display: flex; justify-content: space-between; align-items: center; background: ${attPct>=75?'#d1fae5':'#fee2e2'}; border-radius: 12px; padding: 12px 20px; margin-bottom: 20px; }
@@ -428,13 +454,16 @@ function printAttendanceHistory(student: Student, attendance: AttendanceSummary[
           <div class="school-name">${schoolName}</div>
           <div style="font-size: 10px; color: #64748b; letter-spacing: 2px;">ATTENDANCE RECORD — ${year}</div>
         </div>
-        <div class="student-info">
-          ${[
-            ['Student Name', student.full_name],
-            ["Father's Name", student.father_name??'—'],
-            ['Roll No.', student.roll_number??'—'],
-            ['Class', student.current_grade?`Class ${student.current_grade}${student.current_section?`-${student.current_section}`:''}` :'—'],
-          ].map(([l,v])=>`<div><div class="info-label">${l}</div><div class="info-value">${v}</div></div>`).join('')}
+        <div class="student-info-row">
+          ${studentPhotoHtml(student, 56, 10)}
+          <div class="student-info">
+            ${[
+              ['Student Name', student.full_name],
+              ["Father's Name", student.father_name??'—'],
+              ['Roll No.', student.roll_number??'—'],
+              ['Class', student.current_grade?`Class ${student.current_grade}${student.current_section?`-${student.current_section}`:''}` :'—'],
+            ].map(([l,v])=>`<div><div class="info-label">${l}</div><div class="info-value">${v}</div></div>`).join('')}
+          </div>
         </div>
         <div class="summary-bar">
           <div class="summary-stats">
@@ -497,7 +526,8 @@ function printFeeHistory(student: Student, fees: FeeRecord[], schoolName: string
         .school-logo { width: 60px; height: 60px; border-radius: 50%; object-fit: cover; margin-bottom: 8px; }
         .school-logo-placeholder { width: 60px; height: 60px; background: #1d4ed8; border-radius: 50%; margin: 0 auto 8px; }
         .school-name { font-size: 20px; font-weight: 800; color: #0f172a; }
-        .student-info { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; background: #f8fafc; border-radius: 12px; padding: 12px 16px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
+        .student-info { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; background: #f8fafc; border-radius: 12px; padding: 12px 16px; border: 1px solid #e2e8f0; flex: 1; }
+        .student-info-row { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
         .info-label { font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
         .info-value { font-size: 13px; font-weight: 600; color: #1e293b; margin-top: 2px; }
         .summary-cards { display: flex; gap: 16px; margin-bottom: 20px; }
@@ -522,13 +552,16 @@ function printFeeHistory(student: Student, fees: FeeRecord[], schoolName: string
           <div class="school-name">${schoolName}</div>
           <div style="font-size: 10px; color: #64748b; letter-spacing: 2px;">FEE HISTORY — ${year}</div>
         </div>
-        <div class="student-info">
-          ${[
-            ['Student Name', student.full_name],
-            ["Father's Name", student.father_name??'—'],
-            ['Roll No.', student.roll_number??'—'],
-            ['Class', student.current_grade?`Class ${student.current_grade}${student.current_section?`-${student.current_section}`:''}` :'—'],
-          ].map(([l,v])=>`<div><div class="info-label">${l}</div><div class="info-value">${v}</div></div>`).join('')}
+        <div class="student-info-row">
+          ${studentPhotoHtml(student, 56, 10)}
+          <div class="student-info">
+            ${[
+              ['Student Name', student.full_name],
+              ["Father's Name", student.father_name??'—'],
+              ['Roll No.', student.roll_number??'—'],
+              ['Class', student.current_grade?`Class ${student.current_grade}${student.current_section?`-${student.current_section}`:''}` :'—'],
+            ].map(([l,v])=>`<div><div class="info-label">${l}</div><div class="info-value">${v}</div></div>`).join('')}
+          </div>
         </div>
         <div class="summary-cards">
           <div class="summary-card"><div class="summary-label">Total Paid</div><div class="summary-value" style="color:#059669;">Rs ${totalPaid.toLocaleString()}</div></div>
@@ -621,7 +654,8 @@ function printFullRecord(student: Student, fees: FeeRecord[], attendance: Attend
         .school-logo { width: 60px; height: 60px; border-radius: 50%; object-fit: cover; margin-bottom: 8px; }
         .school-logo-placeholder { width: 60px; height: 60px; background: #1d4ed8; border-radius: 50%; margin: 0 auto 8px; }
         .school-name { font-size: 20px; font-weight: 800; color: #0f172a; }
-        .student-info { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; background: #f8fafc; border-radius: 12px; padding: 12px 16px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
+        .student-info { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; background: #f8fafc; border-radius: 12px; padding: 12px 16px; border: 1px solid #e2e8f0; flex: 1; }
+        .student-info-row { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
         .info-label { font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
         .info-value { font-size: 13px; font-weight: 600; color: #1e293b; margin-top: 2px; }
         table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 10px; }
@@ -651,17 +685,20 @@ function printFullRecord(student: Student, fees: FeeRecord[], attendance: Attend
           <div style="font-size: 10px; color: #64748b; letter-spacing: 2px;">FULL STUDENT RECORD — ${year}</div>
         </div>
         
-        <div class="student-info">
-          ${[
-            ['Student Name', student.full_name],
-            ["Father's Name", student.father_name??'—'],
-            ['Roll No.', student.roll_number??'—'],
-            ['Class', student.current_grade?`Class ${student.current_grade}${student.current_section?`-${student.current_section}`:''}` :'—'],
-            ['Date of Birth', student.date_of_birth||'—'],
-            ['Admission Date', student.admission_date||'—'],
-            ['Status', student.status||'Active'],
-            ['Phone', student.phone||'—'],
-          ].map(([l,v])=>`<div><div class="info-label">${l}</div><div class="info-value">${v}</div></div>`).join('')}
+        <div class="student-info-row">
+          ${studentPhotoHtml(student, 64, 12)}
+          <div class="student-info">
+            ${[
+              ['Student Name', student.full_name],
+              ["Father's Name", student.father_name??'—'],
+              ['Roll No.', student.roll_number??'—'],
+              ['Class', student.current_grade?`Class ${student.current_grade}${student.current_section?`-${student.current_section}`:''}` :'—'],
+              ['Date of Birth', student.date_of_birth||'—'],
+              ['Admission Date', student.admission_date||'—'],
+              ['Status', student.status||'Active'],
+              ['Phone', student.phone||'—'],
+            ].map(([l,v])=>`<div><div class="info-label">${l}</div><div class="info-value">${v}</div></div>`).join('')}
+          </div>
         </div>
 
         <div class="section">
@@ -698,6 +735,98 @@ function printFullRecord(student: Student, fees: FeeRecord[], attendance: Attend
     </html>
   `;
   printHTML(html, `Full Record — ${student.full_name}`);
+}
+
+// ── Print Profile (personal + academic info only) ──────────────────────────────
+
+function printProfile(student: Student, schoolName: string, schoolLogo: string | null) {
+  const logoHtml = schoolLogo
+    ? `<img src="${schoolLogo}" class="school-logo" />`
+    : `<div class="school-logo-placeholder"></div>`;
+
+  const personalFields: [string, string][] = [
+    ['Full Name', student.full_name || '—'],
+    ["Father's Name", student.father_name || '—'],
+    ['Date of Birth', student.date_of_birth || '—'],
+    ['CNIC / B-Form', student.cnic || '—'],
+    ['Phone', student.phone || '—'],
+    ["Father's Phone", student.father_phone || '—'],
+    ['Address', student.address || '—'],
+  ];
+
+  const academicFields: [string, string][] = [
+    ['Roll Number', student.roll_number || '—'],
+    ['Class', student.current_grade ? `Class ${student.current_grade}${student.current_section ? `-${student.current_section}` : ''}` : '—'],
+    ['Admission Date', student.admission_date || '—'],
+    ['Status', student.status ? student.status.charAt(0).toUpperCase() + student.status.slice(1) : 'Active'],
+  ];
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Student Profile — ${student.full_name}</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: white; padding: 20px; }
+        @media print { body { padding: 0; } @page { size: A4; margin: 10mm; } }
+        .container { max-width: 800px; margin: 0 auto; }
+        .header { text-align: center; border-bottom: 2px solid #1d4ed8; padding-bottom: 15px; margin-bottom: 24px; }
+        .school-logo { width: 60px; height: 60px; border-radius: 50%; object-fit: cover; margin-bottom: 8px; }
+        .school-logo-placeholder { width: 60px; height: 60px; background: #1d4ed8; border-radius: 50%; margin: 0 auto 8px; }
+        .school-name { font-size: 20px; font-weight: 800; color: #0f172a; }
+        .profile-banner { display: flex; align-items: center; gap: 20px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px; padding: 18px 22px; margin-bottom: 24px; }
+        .name-block .name { font-size: 20px; font-weight: 800; color: #0f172a; }
+        .name-block .meta { font-size: 12px; color: #64748b; margin-top: 4px; }
+        .section-title { font-size: 13px; font-weight: 700; color: #1d4ed8; text-transform: uppercase; letter-spacing: 1px; border-bottom: 2px solid #1d4ed8; padding-bottom: 6px; margin-bottom: 14px; }
+        .section { margin-bottom: 24px; }
+        .field-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+        .field-grid .full { grid-column: 1 / -1; }
+        .info-label { font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
+        .info-value { font-size: 14px; font-weight: 600; color: #1e293b; margin-top: 3px; }
+        .footer { text-align: center; font-size: 9px; color: #94a3b8; margin-top: 30px; padding-top: 12px; border-top: 1px solid #e2e8f0; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          ${logoHtml}
+          <div class="school-name">${schoolName}</div>
+          <div style="font-size: 10px; color: #64748b; letter-spacing: 2px;">STUDENT PROFILE</div>
+        </div>
+
+        <div class="profile-banner">
+          ${studentPhotoHtml(student, 84, 14)}
+          <div class="name-block">
+            <div class="name">${student.full_name}</div>
+            <div class="meta">
+              ${student.current_grade ? `Class ${student.current_grade}${student.current_section ? `-${student.current_section}` : ''}` : ''}
+              ${student.roll_number ? ` · Roll# ${student.roll_number}` : ''}
+              ${student.status ? ` · ${student.status.charAt(0).toUpperCase() + student.status.slice(1)}` : ''}
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Personal Information</div>
+          <div class="field-grid">
+            ${personalFields.map(([l,v])=>`<div class="${l==='Address'?'full':''}"><div class="info-label">${l}</div><div class="info-value">${v}</div></div>`).join('')}
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Academic Information</div>
+          <div class="field-grid">
+            ${academicFields.map(([l,v])=>`<div><div class="info-label">${l}</div><div class="info-value">${v}</div></div>`).join('')}
+          </div>
+        </div>
+
+        <div class="footer">Generated on ${new Date().toLocaleDateString('en-PK')} · Campus Core</div>
+      </div>
+    </body>
+    </html>
+  `;
+  printHTML(html, `Student Profile — ${student.full_name}`);
 }
 
 // ── Certificate Tab — full 11-type generator with auto-fill ───────────────────
@@ -941,6 +1070,18 @@ export default function StudentProfiles() {
   const photoInputRef = useRef<HTMLInputElement>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
 
+  // Face ID (reference photo for face-match attendance)
+  const faceIdInputRef = useRef<HTMLInputElement>(null);
+  const [faceIdUploading, setFaceIdUploading] = useState(false);
+  const [faceIdMessage, setFaceIdMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Attendance QR
+  const [regeneratingToken, setRegeneratingToken] = useState(false);
+  const [qrMessage, setQrMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [generatingAccessCode, setGeneratingAccessCode] = useState(false);
+  const [accessCodeMessage, setAccessCodeMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
   const [fees, setFees] = useState<FeeRecord[]>([]);
   const [attendance, setAttendance] = useState<AttendanceSummary[]>([]);
   const [rawAttendance, setRawAttendance] = useState<AttendanceRecord[]>([]);
@@ -962,6 +1103,9 @@ export default function StudentProfiles() {
 
   // Roll number generation state
   const [generatingRoll, setGeneratingRoll] = useState(false);
+
+  // Print state — true while fetching fresh data before printing
+  const [printing, setPrinting] = useState(false);
 
   // ── Search ──────────────────────────────────────────────────────────────────
 
@@ -992,62 +1136,93 @@ export default function StudentProfiles() {
 
   // ── Load tab data ───────────────────────────────────────────────────────────
 
+  async function fetchFeesData(year: number) {
+    const { data } = await supabase.from('fee_records')
+      .select('id, fee_month, fee_year, total_amount, amount_paid, status, payment_date, payment_method')
+      .eq('student_id', selectedStudent!.id).eq('fee_year', year)
+      .order('fee_month', { ascending: false });
+    return data ?? [];
+  }
+
+  async function fetchAttendanceData(year: number) {
+    const [attRes, settRes] = await Promise.all([
+      supabase.from('attendance_records')
+        .select('attendance_date, status')
+        .eq('student_id', selectedStudent!.id)
+        .gte('attendance_date', `${year}-01-01`)
+        .lte('attendance_date', `${year}-12-31`),
+      supabase.from('school_settings')
+        .select('weekly_off_days')
+        .eq('school_id', schoolId)
+        .single(),
+    ]);
+    const raw: AttendanceRecord[] = attRes.data ?? [];
+    const offDays = (settRes.data as { weekly_off_days?: number[] } | null)?.weekly_off_days ?? [];
+
+    const map: Record<string, AttendanceSummary> = {};
+    raw.forEach(r => {
+      const d = new Date(r.attendance_date);
+      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      if (!map[key]) map[key] = { month: key, present:0, absent:0, late:0, leave:0 };
+      if (r.status==='present') map[key].present++;
+      else if (r.status==='absent') map[key].absent++;
+      else if (r.status==='late') map[key].late++;
+      else if (r.status==='leave') map[key].leave++;
+    });
+    const summary = Object.values(map).sort((a,b) => a.month.localeCompare(b.month));
+    return { raw, summary, offDays };
+  }
+
+  async function fetchResultsData(year: number) {
+    const { data } = await supabase.from('student_results')
+      .select('id, exam_type, subject_name, obtained_marks, total_marks, pass_fail, exam_year, exam_month, grade')
+      .eq('student_id', selectedStudent!.id).eq('exam_year', year);
+    if (!data) return [];
+    const seen = new Set<string>();
+    return data.filter(r => {
+      const k = `${r.exam_type}-${r.exam_year}-${r.exam_month??0}-${r.subject_name}`;
+      if (seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+  }
+
+  // Groups a results array into the same exam-type buckets used for display/printing
+  function buildExamGroups(results: Result[]) {
+    type ExamGroupLocal = { label: string; rows: Result[]; sortOrder: number };
+    const map: Record<string, ExamGroupLocal> = {};
+    results.forEach(r => {
+      const key = r.exam_type === 'monthly' ? `monthly-${r.exam_month??0}` : r.exam_type;
+      if (!map[key]) {
+        let label = '', sortOrder = 0;
+        if (key.startsWith('monthly-')) { const m=Number(key.split('-')[1]); label=`Monthly — ${MONTH_NAMES[m-1]??''}`; sortOrder=m; }
+        else if (key==='midterm') { label='Midterm Exam'; sortOrder=50; }
+        else if (key==='annual') { label='Annual Exam'; sortOrder=99; }
+        else { label=key.charAt(0).toUpperCase()+key.slice(1); sortOrder=60; }
+        map[key] = { label, rows:[], sortOrder };
+      }
+      map[key].rows.push(r);
+    });
+    return Object.entries(map).sort(([,a],[,b])=>a.sortOrder-b.sortOrder);
+  }
+
   useEffect(() => {
-    if (!selectedStudent || activeTab === 'profile' || activeTab === 'certificate') return;
+    if (!selectedStudent || activeTab === 'profile' || activeTab === 'certificate'
+        || activeTab === 'attendance_qr' || activeTab === 'face_id' || activeTab === 'parent_access') return;
     setTabLoading(true);
 
     if (activeTab === 'fees') {
-      supabase.from('fee_records')
-        .select('id, fee_month, fee_year, total_amount, amount_paid, status, payment_date, payment_method')
-        .eq('student_id', selectedStudent.id).eq('fee_year', selectedYear)
-        .order('fee_month', { ascending: false })
-        .then(({ data }) => { setFees(data ?? []); setTabLoading(false); });
+      fetchFeesData(selectedYear).then(data => { setFees(data); setTabLoading(false); });
 
     } else if (activeTab === 'attendance') {
-      Promise.all([
-        supabase.from('attendance_records')
-          .select('attendance_date, status')
-          .eq('student_id', selectedStudent.id)
-          .gte('attendance_date', `${selectedYear}-01-01`)
-          .lte('attendance_date', `${selectedYear}-12-31`),
-        supabase.from('school_settings')
-          .select('weekly_off_days')
-          .eq('school_id', schoolId)
-          .single(),
-      ]).then(([attRes, settRes]) => {
-        const raw: AttendanceRecord[] = attRes.data ?? [];
+      fetchAttendanceData(selectedYear).then(({ raw, summary, offDays }) => {
         setRawAttendance(raw);
-        setWeeklyOffDays((settRes.data as { weekly_off_days?: number[] } | null)?.weekly_off_days ?? []);
-
-        const map: Record<string, AttendanceSummary> = {};
-        raw.forEach(r => {
-          const d = new Date(r.attendance_date);
-          const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-          if (!map[key]) map[key] = { month: key, present:0, absent:0, late:0, leave:0 };
-          if (r.status==='present') map[key].present++;
-          else if (r.status==='absent') map[key].absent++;
-          else if (r.status==='late') map[key].late++;
-          else if (r.status==='leave') map[key].leave++;
-        });
-        setAttendance(Object.values(map).sort((a,b) => a.month.localeCompare(b.month)));
+        setWeeklyOffDays(offDays);
+        setAttendance(summary);
         setTabLoading(false);
       });
 
     } else if (activeTab === 'results') {
-      supabase.from('student_results')
-        .select('id, exam_type, subject_name, obtained_marks, total_marks, pass_fail, exam_year, exam_month, grade')
-        .eq('student_id', selectedStudent.id).eq('exam_year', selectedYear)
-        .then(({ data }) => {
-          if (!data) { setExamResults([]); setTabLoading(false); return; }
-          const seen = new Set<string>();
-          const deduped = data.filter(r => {
-            const k = `${r.exam_type}-${r.exam_year}-${r.exam_month??0}-${r.subject_name}`;
-            if (seen.has(k)) return false;
-            seen.add(k); return true;
-          });
-          setExamResults(deduped);
-          setTabLoading(false);
-        });
+      fetchResultsData(selectedYear).then(data => { setExamResults(data); setTabLoading(false); });
 
     } else if (activeTab === 'documents') {
       supabase.from('student_documents')
@@ -1079,6 +1254,120 @@ export default function StudentProfiles() {
     } finally {
       setPhotoUploading(false);
       if (photoInputRef.current) photoInputRef.current.value = '';
+    }
+  }
+
+  // ── Attendance QR — regenerate token ──────────────────────────────────────────
+
+  async function handleRegenerateToken() {
+    if (!selectedStudent || !schoolId) return;
+    setRegeneratingToken(true);
+    setQrMessage(null);
+    try {
+      const newToken = `att_${selectedStudent.id}_${Math.floor(Math.random() * 100000)}`;
+      const { error } = await supabase
+        .from('students')
+        .update({ attendance_token: newToken })
+        .eq('id', selectedStudent.id);
+      if (error) throw error;
+      setSelectedStudent(prev => prev ? { ...prev, attendance_token: newToken } : prev);
+      setQrMessage({ type: 'success', text: 'QR code regenerated. The old code is now invalid.' });
+    } catch (err: any) {
+      setQrMessage({ type: 'error', text: 'Failed to regenerate token: ' + (err.message ?? 'Unknown error') });
+    } finally {
+      setRegeneratingToken(false);
+    }
+  }
+
+  // ── Parent Access Code — generate/regenerate ──────────────────────────────────
+  // 6-digit numeric PIN — easier for parents to remember and type than a mixed
+  // alphanumeric code, same mental model as a SIM/ATM PIN.
+
+  function generateRandomAccessCode(): string {
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+      code += Math.floor(Math.random() * 10).toString();
+    }
+    return code;
+  }
+
+  function formatAccessCode(code: string): string {
+    // Display as "482 915" for readability — stored value stays plain digits.
+    return code.length === 6 ? `${code.slice(0, 3)} ${code.slice(3)}` : code;
+  }
+
+  async function handleGenerateAccessCode() {
+    if (!selectedStudent || !schoolId) return;
+    setGeneratingAccessCode(true);
+    setAccessCodeMessage(null);
+    try {
+      const newCode = generateRandomAccessCode();
+      const { error } = await supabase
+        .from('students')
+        .update({
+          parent_access_code: newCode,
+          parent_code_sent: true,
+          parent_code_sent_at: new Date().toISOString(),
+        })
+        .eq('id', selectedStudent.id);
+      if (error) throw error;
+      setSelectedStudent(prev => prev ? { ...prev, parent_access_code: newCode, parent_code_sent: true } : prev);
+      setAccessCodeMessage({ type: 'success', text: 'Access code generated. Hand this to the parent — the old code (if any) is now invalid.' });
+    } catch (err: any) {
+      setAccessCodeMessage({ type: 'error', text: 'Failed to generate code: ' + (err.message ?? 'Unknown error') });
+    } finally {
+      setGeneratingAccessCode(false);
+    }
+  }
+
+  function printAccessCodeSlip() {
+    if (!selectedStudent?.parent_access_code) return;
+    const win = window.open('', '_blank', 'width=420,height=320');
+    if (!win) return;
+    win.document.write(`
+      <html>
+        <head><title>Parent Access Slip</title></head>
+        <body style="font-family: system-ui, sans-serif; padding: 32px; text-align: center;">
+          <p style="font-size: 13px; color: #666; margin: 0 0 4px;">Parent Portal Access</p>
+          <h2 style="margin: 0 0 16px; font-size: 18px;">${selectedStudent.full_name}${selectedStudent.roll_number ? ` · Roll No. ${selectedStudent.roll_number}` : ''}</h2>
+          <div style="font-size: 28px; font-weight: 700; letter-spacing: 4px; padding: 16px; border: 2px dashed #999; border-radius: 8px; margin-bottom: 16px;">
+            ${formatAccessCode(selectedStudent.parent_access_code)}
+          </div>
+          <p style="font-size: 12px; color: #888;">
+            Enter your father's phone number on file and this code at the parent login page.
+          </p>
+        </body>
+      </html>
+    `);
+    win.document.close();
+    win.focus();
+    win.print();
+  }
+
+  // ── Face ID — reference photo upload (used for face-match attendance) ────────
+
+  async function handleFaceIdUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !selectedStudent || !schoolId) return;
+    if (!file.type.startsWith('image/')) { setFaceIdMessage({ type: 'error', text: 'Please select an image file.' }); return; }
+    setFaceIdUploading(true);
+    setFaceIdMessage(null);
+    try {
+      const ext = file.name.split('.').pop() ?? 'jpg';
+      const path = `${schoolId}/${selectedStudent.id}/face-id.${ext}`;
+      const { error: upErr } = await supabase.storage.from('student-photos').upload(path, file, { upsert:true, contentType:file.type });
+      if (upErr) throw upErr;
+      const { data: urlData } = supabase.storage.from('student-photos').getPublicUrl(path);
+      const reference_photo_url = `${urlData.publicUrl}?t=${Date.now()}`;
+      const { error: dbErr } = await supabase.from('students').update({ reference_photo_url }).eq('id', selectedStudent.id);
+      if (dbErr) throw dbErr;
+      setSelectedStudent(prev => prev ? { ...prev, reference_photo_url } : prev);
+      setFaceIdMessage({ type: 'success', text: 'Reference photo saved for face-match attendance.' });
+    } catch (err: any) {
+      setFaceIdMessage({ type: 'error', text: 'Upload failed: ' + (err.message ?? 'Make sure bucket is public.') });
+    } finally {
+      setFaceIdUploading(false);
+      if (faceIdInputRef.current) faceIdInputRef.current.value = '';
     }
   }
 
@@ -1235,6 +1524,35 @@ export default function StudentProfiles() {
   function cancelEdit() { setEditing(false); setEditData({}); }
   function handleFieldChange(name: string, value: string) { setEditData(prev => ({ ...prev, [name]: value })); }
 
+  // ── Print (context-aware — always fetches fresh data, regardless of which tabs were visited before) ───
+  async function handlePrint() {
+    if (!selectedStudent) return;
+    const logo = settings?.logo_url || null;
+    setPrinting(true);
+    try {
+      if (activeTab === 'fees') {
+        const feesData = await fetchFeesData(selectedYear);
+        setFees(feesData);
+        printFeeHistory(selectedStudent, feesData, schoolName, logo, selectedYear);
+
+      } else if (activeTab === 'attendance') {
+        const { raw, summary, offDays } = await fetchAttendanceData(selectedYear);
+        setRawAttendance(raw); setWeeklyOffDays(offDays); setAttendance(summary);
+        printAttendanceHistory(selectedStudent, summary, raw, offDays, schoolName, logo, selectedYear);
+
+      } else if (activeTab === 'results') {
+        const resultsData = await fetchResultsData(selectedYear);
+        setExamResults(resultsData);
+        printResults(buildExamGroups(resultsData), selectedStudent, schoolName, selectedYear, logo);
+
+      } else {
+        printProfile(selectedStudent, schoolName, logo);
+      }
+    } finally {
+      setPrinting(false);
+    }
+  }
+
   async function saveEdit() {
     if (!selectedStudent) return;
     setSaving(true);
@@ -1353,10 +1671,12 @@ export default function StudentProfiles() {
         <div className="flex items-center gap-2">
           {!editing ? (
             <>
-              <button onClick={() => window.print()}
-                className="flex items-center gap-2 px-3 py-2 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors">
-                <Printer className="w-4 h-4" /> Print
-              </button>
+              {activeTab !== 'documents' && activeTab !== 'certificate' && (
+                <button onClick={handlePrint} disabled={printing}
+                  className="flex items-center gap-2 px-3 py-2 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors disabled:opacity-60">
+                  <Printer className="w-4 h-4" /> {printing ? 'Preparing...' : 'Print'}
+                </button>
+              )}
               <button onClick={startEdit}
                 className="flex items-center gap-2 px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
                 <Edit2 className="w-4 h-4" /> Edit
@@ -1413,12 +1733,15 @@ export default function StudentProfiles() {
       <div className="flex items-center gap-3 mb-4">
         <div className="flex gap-1 bg-slate-100 rounded-xl p-1 flex-1 overflow-x-auto">
           {([
-            { id:'profile',     label:'Profile',     icon:User },
-            { id:'fees',        label:'Fees',         icon:CreditCard },
-            { id:'attendance',  label:'Attendance',   icon:CalendarCheck },
-            { id:'results',     label:'Results',      icon:ClipboardList },
-            { id:'documents',   label:'Documents',    icon:FileText },
-            { id:'certificate', label:'Certificate',  icon:ScrollText },
+            { id:'profile',      label:'Profile',       icon:User },
+            { id:'attendance_qr',label:'Attendance QR', icon:QrCode },
+            { id:'parent_access',label:'Parent Access', icon:KeyRound },
+            { id:'face_id',      label:'Face ID',       icon:Smile },
+            { id:'fees',         label:'Fees',          icon:CreditCard },
+            { id:'attendance',   label:'Attendance',    icon:CalendarCheck },
+            { id:'results',      label:'Results',       icon:ClipboardList },
+            { id:'documents',    label:'Documents',     icon:FileText },
+            { id:'certificate',  label:'Certificate',   icon:ScrollText },
           ] as const).map(({ id, label, icon: Icon }) => (
             <button key={id} onClick={() => setActiveTab(id)}
               className={`flex-1 flex items-center justify-center gap-1 py-2 px-1.5 rounded-lg text-xs font-semibold transition-all whitespace-nowrap min-w-0 ${
@@ -1557,6 +1880,160 @@ export default function StudentProfiles() {
           </div>
         )}
 
+        {/* ── Attendance QR ───────────────────────────────────────────────────── */}
+        {activeTab === 'attendance_qr' && (
+          <div className="p-6">
+            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Attendance QR</h3>
+
+            {qrMessage && (
+              <div className={`mb-4 p-3 rounded-xl text-sm font-medium flex items-center justify-between ${
+                qrMessage.type === 'success'
+                  ? 'bg-green-50 text-green-700 border border-green-200'
+                  : 'bg-red-50 text-red-700 border border-red-200'
+              }`}>
+                {qrMessage.text}
+                <button onClick={() => setQrMessage(null)}><X className="w-4 h-4" /></button>
+              </div>
+            )}
+
+            <div className="flex flex-col items-center gap-4 p-6 bg-white rounded-xl border-2 border-dashed border-slate-200 max-w-sm mx-auto">
+              <div className="text-center">
+                <p className="font-bold text-slate-800">{selectedStudent.full_name}</p>
+                <p className="text-sm text-slate-500">
+                  {selectedStudent.roll_number ? `Roll No: ${selectedStudent.roll_number}` : ''}
+                  {selectedStudent.current_grade ? ` · Class: ${selectedStudent.current_grade}${selectedStudent.current_section ?? ''}` : ''}
+                </p>
+              </div>
+
+              {selectedStudent.attendance_token ? (
+                <QRCode
+                  value={`https://campuscore.app/attendance/scan?token=${selectedStudent.attendance_token}`}
+                  size={160}
+                />
+              ) : (
+                <div className="w-40 h-40 bg-slate-100 rounded flex items-center justify-center text-slate-400 text-sm text-center px-4">
+                  No QR generated yet
+                </div>
+              )}
+
+              <button onClick={handleRegenerateToken} disabled={regeneratingToken}
+                className="flex items-center gap-2 px-4 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-60">
+                {regeneratingToken
+                  ? <><Loader className="w-4 h-4 animate-spin" /> Regenerating...</>
+                  : <><RefreshCw className="w-4 h-4" /> Regenerate QR</>}
+              </button>
+              <p className="text-xs text-slate-400 text-center">
+                Regenerating invalidates the old code immediately. The school places this QR on the student's physical ID card using its own design process — this app only generates the value.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ── Parent Access Code ──────────────────────────────────────────────── */}
+        {activeTab === 'parent_access' && (
+          <div className="p-6">
+            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Parent Access Code</h3>
+
+            {accessCodeMessage && (
+              <div className={`mb-4 p-3 rounded-xl text-sm font-medium flex items-center justify-between ${
+                accessCodeMessage.type === 'success'
+                  ? 'bg-green-50 text-green-700 border border-green-200'
+                  : 'bg-red-50 text-red-700 border border-red-200'
+              }`}>
+                {accessCodeMessage.text}
+                <button onClick={() => setAccessCodeMessage(null)}><X className="w-4 h-4" /></button>
+              </div>
+            )}
+
+            <div className="flex flex-col items-center gap-4 p-6 bg-white rounded-xl border-2 border-dashed border-slate-200 max-w-sm mx-auto">
+              <div className="text-center">
+                <p className="font-bold text-slate-800">{selectedStudent.full_name}</p>
+                <p className="text-sm text-slate-500">
+                  {selectedStudent.roll_number ? `Roll No: ${selectedStudent.roll_number}` : ''}
+                  {selectedStudent.current_grade ? ` · Class: ${selectedStudent.current_grade}${selectedStudent.current_section ?? ''}` : ''}
+                </p>
+                {selectedStudent.father_phone && (
+                  <p className="text-xs text-slate-400 mt-1">Father's Phone: {selectedStudent.father_phone}</p>
+                )}
+              </div>
+
+              {selectedStudent.parent_access_code ? (
+                <div className="flex items-center gap-2 w-full">
+                  <code className="flex-1 text-center rounded-lg bg-slate-50 border border-slate-200 px-3 py-2.5 text-xl font-mono tracking-widest text-slate-800">
+                    {formatAccessCode(selectedStudent.parent_access_code)}
+                  </code>
+                  {selectedStudent.parent_code_sent && (
+                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 whitespace-nowrap">
+                      Issued
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="w-40 h-16 bg-slate-100 rounded flex items-center justify-center text-slate-400 text-sm text-center px-4">
+                  No code generated yet
+                </div>
+              )}
+
+              <div className="flex gap-2 w-full">
+                <button onClick={handleGenerateAccessCode} disabled={generatingAccessCode}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-60">
+                  {generatingAccessCode
+                    ? <><Loader className="w-4 h-4 animate-spin" /> {selectedStudent.parent_access_code ? 'Regenerating...' : 'Generating...'}</>
+                    : <><RefreshCw className="w-4 h-4" /> {selectedStudent.parent_access_code ? 'Regenerate' : 'Generate Code'}</>}
+                </button>
+                {selectedStudent.parent_access_code && (
+                  <button onClick={printAccessCodeSlip}
+                    className="flex items-center gap-1.5 px-4 py-2.5 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors">
+                    <Printer className="w-4 h-4" /> Print
+                  </button>
+                )}
+              </div>
+
+              <p className="text-xs text-slate-400 text-center">
+                Hand this code to the parent in person. They'll log in with their phone number on file ({selectedStudent.father_phone || 'add a phone number first'}) plus this code. Regenerating invalidates the old code immediately.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ── Face ID ──────────────────────────────────────────────────────────── */}
+        {activeTab === 'face_id' && (
+          <div className="p-6">
+            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Face ID — Reference Photo</h3>
+
+            {faceIdMessage && (
+              <div className={`mb-4 p-3 rounded-xl text-sm font-medium flex items-center justify-between ${
+                faceIdMessage.type === 'success'
+                  ? 'bg-green-50 text-green-700 border border-green-200'
+                  : 'bg-red-50 text-red-700 border border-red-200'
+              }`}>
+                {faceIdMessage.text}
+                <button onClick={() => setFaceIdMessage(null)}><X className="w-4 h-4" /></button>
+              </div>
+            )}
+
+            <div className="flex flex-col items-center gap-4 p-6 bg-white rounded-xl border-2 border-dashed border-slate-200 max-w-sm mx-auto">
+              <div className="w-32 h-32 rounded-2xl bg-slate-100 flex items-center justify-center overflow-hidden flex-shrink-0">
+                {selectedStudent.reference_photo_url
+                  ? <img src={selectedStudent.reference_photo_url} alt={selectedStudent.full_name} className="w-full h-full object-cover" />
+                  : <Smile className="w-10 h-10 text-slate-300" />}
+              </div>
+
+              <button onClick={() => faceIdInputRef.current?.click()} disabled={faceIdUploading}
+                className="flex items-center gap-2 px-4 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-60">
+                {faceIdUploading
+                  ? <><Loader className="w-4 h-4 animate-spin" /> Uploading...</>
+                  : <><Camera className="w-4 h-4" /> {selectedStudent.reference_photo_url ? 'Replace Photo' : 'Upload or Capture Photo'}</>}
+              </button>
+              <input ref={faceIdInputRef} type="file" accept="image/*" capture="user" className="hidden" onChange={handleFaceIdUpload} />
+
+              <p className="text-xs text-slate-400 text-center">
+                Used for live face-match attendance (Watchman's "Scan Face" mode) at a fixed 75% confidence threshold. This is separate from the student's main profile photo.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* ── Fees ────────────────────────────────────────────────────────────── */}
         {activeTab === 'fees' && (
           <div className="p-6">
@@ -1615,12 +2092,6 @@ export default function StudentProfiles() {
                 </div>
               </>
             )}
-            <div className="mt-4">
-              <button onClick={() => printFeeHistory(selectedStudent, fees, schoolName, settings?.logo_url || null, selectedYear)}
-                className="flex items-center gap-1.5 px-3 py-2 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-                <Printer className="w-3.5 h-3.5" /> Print Fee History
-              </button>
-            </div>
           </div>
         )}
 
@@ -1741,12 +2212,6 @@ export default function StudentProfiles() {
                 </>
               )
             }
-            <div className="mt-4">
-              <button onClick={() => printAttendanceHistory(selectedStudent, attendance, rawAttendance, weeklyOffDays, schoolName, settings?.logo_url || null, selectedYear)}
-                className="flex items-center gap-1.5 px-3 py-2 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-                <Printer className="w-3.5 h-3.5" /> Print Attendance
-              </button>
-            </div>
           </div>
         )}
 
@@ -1755,14 +2220,6 @@ export default function StudentProfiles() {
           <div className="p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Exam Results — {selectedYear}</h3>
-              {sortedExamGroups.length > 0 && (
-                <button
-                  onClick={() => printResults(sortedExamGroups, selectedStudent, schoolName, selectedYear, settings?.logo_url || null)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                >
-                  <Printer className="w-3.5 h-3.5" /> Print All
-                </button>
-              )}
             </div>
             {tabLoading
               ? <div className="flex justify-center py-10"><div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" /></div>

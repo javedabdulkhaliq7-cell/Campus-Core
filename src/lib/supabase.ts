@@ -124,12 +124,13 @@ export type Announcement = {
   type: string;
   is_active: boolean;
   created_at: string;
+  parent_visible: boolean;
 };
 
 // ── New Subscription Types ───────────────────────────────────────
 
 export type SubscriptionPlan = 'basic' | 'standard' | 'premium';
-export type SubscriptionStatus = 'trial' | 'active' | 'pending_payment' | 'expired' | 'suspended';
+export type SubscriptionStatus = 'trial' | 'active' | 'pending_payment' | 'grace_period' | 'expired' | 'suspended';
 export type PaymentMethod = 'jazzcash' | 'easypaisa';
 export type PaymentStatus = 'pending' | 'verified' | 'failed';
 
@@ -145,6 +146,7 @@ export interface Subscription {
   current_period_start: string | null;
   current_period_end: string | null;
   payment_due_by: string | null;
+  grace_period_started_at: string | null;
   created_at: string;
   updated_at: string;
 }

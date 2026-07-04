@@ -14,6 +14,8 @@ import {
   CertificateField,
   CertificateTypeId,
   SchoolSettings,
+  CERT_TEMPLATES,
+  getCertTemplate,
   generateCertificateNumber,
   todayString,
 } from "./certificate.types";
@@ -201,6 +203,139 @@ function TypeCard({
   );
 }
 
+// ─── Certificate template picker (swatch grid) ────────────────────────────────
+
+function TemplatePicker({
+  templateId,
+  onChoose,
+  saving,
+}: {
+  templateId: string;
+  onChoose: (id: string) => void;
+  saving: boolean;
+}) {
+  return (
+    <div
+      style={{
+        background: "#FFFDF7",
+        border: `1px solid #E2D9C8`,
+        borderRadius: 14,
+        padding: "18px 20px",
+        marginBottom: 24,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 12,
+        }}
+      >
+        <span
+          style={{
+            fontFamily: "'Cinzel', serif",
+            fontSize: 12,
+            letterSpacing: "0.08em",
+            color: NAVY,
+            textTransform: "uppercase",
+          }}
+        >
+          Certificate Template
+        </span>
+        {saving && <span style={{ fontSize: 11, color: "#8A7A60" }}>Saving…</span>}
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))",
+          gap: 10,
+        }}
+      >
+        {CERT_TEMPLATES.map((t) => {
+          const selected = t.id === templateId;
+          return (
+            <button
+              key={t.id}
+              onClick={() => onChoose(t.id)}
+              style={{
+                position: "relative",
+                borderRadius: 10,
+                overflow: "hidden",
+                border: selected ? `2px solid ${NAVY}` : "2px solid #E2D9C8",
+                cursor: "pointer",
+                background: "none",
+                padding: 0,
+                textAlign: "left",
+              }}
+            >
+              <div
+                style={{
+                  background: t.bg,
+                  padding: "12px 8px",
+                  minHeight: 56,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 4,
+                }}
+              >
+                <div
+                  style={{
+                    width: 34,
+                    height: 24,
+                    borderRadius: t.ornaments ? 2 : 5,
+                    border: `2px solid ${t.borderOuter}`,
+                    boxShadow: `inset 0 0 0 2px ${t.bg}, inset 0 0 0 3px ${t.borderInner}`,
+                  }}
+                />
+                <span
+                  style={{
+                    fontFamily: t.headingFont,
+                    color: t.schoolNameColor,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    letterSpacing: "0.04em",
+                  }}
+                >
+                  Aa
+                </span>
+              </div>
+              <div style={{ background: "#fff", padding: "6px 8px", textAlign: "center" }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: "#3A3022" }}>{t.name}</span>
+              </div>
+              {selected && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 6,
+                    right: 6,
+                    width: 16,
+                    height: 16,
+                    borderRadius: "50%",
+                    background: NAVY,
+                    color: "#fff",
+                    fontSize: 10,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  ✓
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      <p style={{ fontSize: 11, color: "#8A7A60", marginTop: 10 }}>
+        Applies to every certificate type, printed and downloaded school-wide.
+      </p>
+    </div>
+  );
+}
+
 // ─── Button component ─────────────────────────────────────────────────────────
 
 function Btn({
@@ -266,16 +401,21 @@ export default function CertificateGenerator() {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfDone, setPdfDone] = useState(false);
 
+  // ── Certificate visual template (saved permanently per school) ──────────────
+  const [templateId, setTemplateId] = useState<string>("gold_classic");
+  const [templateSaving, setTemplateSaving] = useState(false);
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+
   const certRef = useRef<HTMLDivElement>(null);
 
-  // ── Fetch school settings for the CURRENT school ─────────────────────────────
+  // ── Fetch school settings (incl. saved certificate template) for the CURRENT school ──
   useEffect(() => {
     if (!schoolId) return;
     (async () => {
       setLoadingSettings(true);
       const { data, error } = await supabase
         .from("school_settings")
-        .select("school_name, principal_name, logo_url")
+        .select("school_name, principal_name, logo_url, cert_template_id")
         .eq("school_id", schoolId)
         .single();
 
@@ -285,10 +425,19 @@ export default function CertificateGenerator() {
           principal_name: data.principal_name || "",
           logo_url: data.logo_url || null,
         });
+        if (data.cert_template_id) setTemplateId(data.cert_template_id);
       }
       setLoadingSettings(false);
     })();
   }, [schoolId]);
+
+  // ── Choose & permanently save the certificate template ──────────────────────
+  const chooseTemplate = async (id: string) => {
+    setTemplateId(id);
+    setTemplateSaving(true);
+    await supabase.from("school_settings").update({ cert_template_id: id }).eq("school_id", schoolId);
+    setTemplateSaving(false);
+  };
 
   // ── When type is chosen, pre-fill cert number and issue date ───────────────
   const handleSelectType = (id: CertificateTypeId) => {
@@ -462,6 +611,7 @@ export default function CertificateGenerator() {
             typeId={selectedType}
             data={formData}
             settings={settings}
+            templateId={templateId}
           />
         )}
       </div>
@@ -498,6 +648,7 @@ export default function CertificateGenerator() {
         {/* ── STEP 1: Choose type ─────────────────────────────────────────── */}
         {step === 1 && (
           <div style={{ maxWidth: 900, margin: "0 auto" }}>
+            <TemplatePicker templateId={templateId} onChoose={chooseTemplate} saving={templateSaving} />
             <h2
               style={{
                 fontFamily: "'Cinzel', serif",
@@ -552,7 +703,7 @@ export default function CertificateGenerator() {
                 boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
                 <span style={{ fontSize: 22 }}>{def.icon}</span>
                 <h3
                   style={{
@@ -566,6 +717,27 @@ export default function CertificateGenerator() {
                   {def.title}
                 </h3>
               </div>
+
+              <button
+                onClick={() => setShowTemplatePicker((v) => !v)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: 0,
+                  fontSize: 11,
+                  color: "#8A7A60",
+                  marginBottom: 16,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
+                🎨 Template: <strong style={{ color: NAVY }}>{getCertTemplate(templateId).name}</strong> · Change
+              </button>
+              {showTemplatePicker && (
+                <TemplatePicker templateId={templateId} onChoose={chooseTemplate} saving={templateSaving} />
+              )}
 
               {/* Auto-filled info */}
               <div
@@ -675,6 +847,7 @@ export default function CertificateGenerator() {
                     typeId={selectedType!}
                     data={formData}
                     settings={settings}
+                    templateId={templateId}
                   />
                 </div>
               </div>
@@ -722,6 +895,28 @@ export default function CertificateGenerator() {
               </Btn>
             </div>
 
+            <button
+              onClick={() => setShowTemplatePicker((v) => !v)}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: 0,
+                fontSize: 11,
+                color: "#8A7A60",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              🎨 Template: <strong style={{ color: NAVY }}>{getCertTemplate(templateId).name}</strong> · Change
+            </button>
+            {showTemplatePicker && (
+              <div style={{ width: "100%", maxWidth: 600 }}>
+                <TemplatePicker templateId={templateId} onChoose={chooseTemplate} saving={templateSaving} />
+              </div>
+            )}
+
             {/* Certificate (full size, captured for PDF) */}
             <div
               style={{
@@ -737,6 +932,7 @@ export default function CertificateGenerator() {
                   typeId={selectedType!}
                   data={formData}
                   settings={settings}
+                  templateId={templateId}
                 />
               </div>
             </div>
