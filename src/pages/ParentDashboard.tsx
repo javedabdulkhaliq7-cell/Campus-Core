@@ -8,6 +8,7 @@ import ParentAttendanceTab from "../pages/ParentAttendanceTab";
 import ParentFeeTab from "../pages/ParentFeeTab";
 import ParentResultsTab from "../pages/ParentResultsTab";
 import ParentNoticesTab from "../pages/ParentNoticesTab";
+import ParentMessagesTab from "../pages/ParentMessagesTab";
 
 interface StudentRow {
   id: string;
@@ -44,13 +45,8 @@ export default function ParentDashboard({ onLogout }: { onLogout: () => Promise<
     noticesUnread: 0,
   });
 
-  useEffect(() => {
-    loadStudents();
-  }, []);
-
-  useEffect(() => {
-    if (selectedId) loadStats(selectedId);
-  }, [selectedId]);
+  useEffect(() => { loadStudents(); }, []);
+  useEffect(() => { if (selectedId) loadStats(selectedId); }, [selectedId]);
 
   async function loadStudents() {
     setLoading(true);
@@ -145,13 +141,9 @@ export default function ParentDashboard({ onLogout }: { onLogout: () => Promise<
               </p>
             </div>
             {selectedStudent.status && (
-              <span
-                className={`text-xs font-semibold px-2 py-1 rounded-full shrink-0 ${
-                  selectedStudent.status === "Active"
-                    ? "bg-emerald-50 text-emerald-700"
-                    : "bg-slate-100 text-slate-500"
-                }`}
-              >
+              <span className={`text-xs font-semibold px-2 py-1 rounded-full shrink-0 ${
+                selectedStudent.status === "Active" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
+              }`}>
                 {selectedStudent.status}
               </span>
             )}
@@ -164,11 +156,7 @@ export default function ParentDashboard({ onLogout }: { onLogout: () => Promise<
                 onChange={(e) => setSelectedId(e.target.value)}
                 className="w-full appearance-none text-sm border border-slate-200 rounded-lg px-3 py-2 pr-8 bg-slate-50 text-slate-700"
               >
-                {students.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.full_name}
-                  </option>
-                ))}
+                {students.map((s) => <option key={s.id} value={s.id}>{s.full_name}</option>)}
               </select>
               <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-2.5 pointer-events-none" />
             </div>
@@ -180,7 +168,11 @@ export default function ParentDashboard({ onLogout }: { onLogout: () => Promise<
           <StatCard label="Attendance" value={stats.attendancePct !== null ? `${stats.attendancePct}%` : "—"} />
           <StatCard label="Fees Paid" value={`${stats.feesPaidCount}/${stats.feesTotalCount}`} />
           <StatCard label="Pending" value={`Rs ${stats.feesPending.toLocaleString()}`} />
-          <StatCard label="Notices" value={stats.noticesUnread > 0 ? `${stats.noticesUnread} New` : '—'} highlight={stats.noticesUnread > 0} />
+          <StatCard
+            label="Notices"
+            value={stats.noticesUnread > 0 ? `${stats.noticesUnread} New` : "—"}
+            highlight={stats.noticesUnread > 0}
+          />
         </div>
 
         {/* Tabs */}
@@ -198,19 +190,15 @@ export default function ParentDashboard({ onLogout }: { onLogout: () => Promise<
               >
                 <tab.icon className="w-4 h-4" />
                 {tab.label}
+                {tab.id === "notices" && stats.noticesUnread > 0 && (
+                  <span className="w-2 h-2 rounded-full bg-red-500 ml-0.5" />
+                )}
               </button>
             ))}
           </div>
 
-          {/* Tab Content */}
-          {activeTab === "attendance" && (
-            <ParentAttendanceTab studentId={selectedStudent.id} />
-          )}
-
-          {activeTab === "fees" && (
-            <ParentFeeTab studentId={selectedStudent.id} />
-          )}
-
+          {activeTab === "attendance" && <ParentAttendanceTab studentId={selectedStudent.id} />}
+          {activeTab === "fees" && <ParentFeeTab studentId={selectedStudent.id} />}
           {activeTab === "results" && (
             <ParentResultsTab
               studentId={selectedStudent.id}
@@ -219,15 +207,18 @@ export default function ParentDashboard({ onLogout }: { onLogout: () => Promise<
               classGrade={selectedStudent.current_grade}
             />
           )}
-
           {activeTab === "notices" && (
             <ParentNoticesTab schoolId={selectedStudent.school_id ?? ''} />
           )}
-
-          {activeTab === "messages" && (
-            <div className="p-8 text-center text-sm text-slate-400">
-              Messages coming in Phase 9.
-            </div>
+          {activeTab === "messages" && selectedStudent.school_id && (
+            <ParentMessagesTab
+              studentId={selectedStudent.id}
+              studentName={selectedStudent.full_name}
+              schoolId={selectedStudent.school_id}
+            />
+          )}
+          {activeTab === "messages" && !selectedStudent.school_id && (
+            <div className="p-8 text-center text-sm text-slate-400">School information not available.</div>
           )}
         </div>
       </main>
